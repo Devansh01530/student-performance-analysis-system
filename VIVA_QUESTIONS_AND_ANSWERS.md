@@ -46,14 +46,30 @@ The database consists of six interconnected tables:
   - Because features and targets belong to distinct temporal milestones, data leakage is eliminated.
   - The trained model then takes current students' latest examination marks to predict their **Upcoming Next Examination** performance.
 
-#### Q5. Which Machine Learning regression algorithms did you evaluate, and how do they differ?
+#### Q5. Why is a standard random train-test split flawed in longitudinal prediction, and how does Student-Grouped Partitioning solve this?
+**Answer:**  
+In longitudinal data where each student has multiple historical examination transitions (e.g. $Exam_1 \to Exam_2$, $Exam_2 \to Exam_3$), a naive random train-test split scatters the same student's transitions across both training and testing subsets.
+- **The flaw**: The model memorizes individual student baseline performance in training and tests on the same student in testing, yielding artificially inflated accuracy that fails to generalize to new students.
+- **Our solution**: We implemented **Student-Grouped Holdout Partitioning (`GroupShuffleSplit` on `student_id`)**:
+  - All transition records belonging to a given student are assigned strictly to either the Training partition or the Testing partition.
+  - Test students are completely unseen during model fitting, providing an honest evaluation of real-world generalization to new students.
+  - We also support a **Chronological Timeline Split** that trains on earlier examination transitions and evaluates on the latest examination milestone.
+
+#### Q6. Why is using overall attendance summary in predictive models a form of temporal data leakage, and how did you isolate historical attendance?
+**Answer:**  
+If an examination was conducted in September or October, evaluating the predictive transition using the student's entire semester attendance includes attendance records logged in November or December (events occurring in the future relative to the examination).
+- **Our solution**: We built a date-cutoff attendance engine in `database.py`:
+  $$\text{Historical Attendance}(t) = \text{Attendance records where } \text{attendance\_date} \le \text{exam\_date}_t$$
+- The predictive model computes attendance strictly up to the prior examination date, completely eliminating temporal leakage.
+
+#### Q7. Which Machine Learning regression algorithms did you evaluate, and how do they differ?
 **Answer:**  
 We evaluated three supervised regression algorithms:
 1. **Linear Regression**: A parametric model that assumes a linear relationship between past exam scores/attendance and future outcomes ($y = w_0 + w_1 x_1 + \dots + w_n x_n$). It serves as a transparent baseline.
 2. **Decision Tree Regressor**: A non-parametric model that partitions feature space into hierarchical decision nodes based on variance reduction. It captures non-linear grade transition thresholds.
 3. **Random Forest Regressor**: An ensemble method combining multiple decision trees trained on bootstrapped data subsets with random feature subsets. It mitigates overfitting and provides robust generalization.
 
-#### Q6. What evaluation metrics did you use to assess model accuracy?
+#### Q8. What evaluation metrics did you use to assess model accuracy?
 **Answer:**  
 We evaluated holdout test sets using four industry-standard metrics:
 1. **Mean Absolute Error (MAE)**: $\frac{1}{n}\sum |y_i - \hat{y}_i|$ — Measures the average magnitude of absolute error in marks without over-penalizing large outliers.
@@ -65,7 +81,7 @@ We evaluated holdout test sets using four industry-standard metrics:
 
 ### Section 3: Data Quality, Attendance & Safety
 
-#### Q7. How does the system handle students who have no attendance records?
+#### Q9. How does the system handle students who have no attendance records?
 **Answer:**  
 Rather than assigning a fabricated default (such as 85%), the system adheres to strict data integrity:
 - Students with zero logged classes receive `None` (`NaN`) for `attendance_percentage` and are categorized as `"Not Recorded"`.
@@ -73,29 +89,34 @@ Rather than assigning a fabricated default (such as 85%), the system adheres to 
   $$\text{Cohort Attendance Average} = \frac{\sum_{\text{recorded}} \text{Attendance \%}}{N_{\text{recorded}}}$$
 - This guarantees the dashboard never displays artificial attendance figures.
 
-#### Q8. How do you ensure safety during CSV or Excel dataset imports?
+#### Q10. How do you handle column header normalization during CSV or Excel dataset import?
+**Answer:**  
+Real-world uploaded spreadsheets often have inconsistent column headers (e.g. `department`, `DEPARTMENT`, `Dept`, `branch`; `semester`, `sem`; `student_name`, `Full Name`).
+- In `pages/10_Data_Import.py` and `database.py`, we implement a case-insensitive canonical mapping dictionary:
+  `canonicalize_columns(df)` normalizes special characters (`*`, `#`), trims whitespace, and maps all semantic aliases to standard database schema keys (`Name`, `Department`, `Semester`, `Email`, `Student_ID`).
+- All remaining columns are identified and preserved as subject courses (e.g. `Python`, `Data Structures`).
+
+#### Q11. Why did you implement a pre-commit integrity audit gate rather than silently imputing missing marks with column means?
+**Answer:**  
+In educational administration, silent data imputation can distort student transcripts and official records.
+- We implemented an explicit **Pre-Commit Integrity Audit Gate**:
+  1. **Name Audit**: Rejects empty strings, whitespace, and null/nan tokens.
+  2. **Duplicate Audit**: Detects duplicate student names or emails within the upload.
+  3. **Marks Audit**: Rejects missing (NaN) values and non-numeric entries; flags any marks outside $[0, 100]$.
+- If validation errors are detected, the database commit button is strictly disabled and an audit table displaying the exact Row, Column, Value, and Issue Description is shown.
+- Administrators are given an explicit "Auto-Filter: Exclude Invalid Rows" option to review and purge corrupted rows safely before committing.
+
+#### Q12. How do you ensure safety during CSV or Excel database commits?
 **Answer:**  
 - **Foreign Key Enforcement**: `conn.execute("PRAGMA foreign_keys = ON;")` runs on every connection.
 - **Non-Destructive Safe Append Mode (Default)**: Ingests new records or matches existing students by email or name/department, updating course scores without dropping other records.
 - **Protected Overwrite Mode**: If the administrator explicitly chooses overwrite, a confirmation safeguard is required. The database cascades deletion in strict referential order (`attendance` $\to$ `marks` $\to$ `students`), eliminating orphaned rows.
 
-#### Q9. Which Pandas data-cleaning operations does your application demonstrate?
-**Answer:**  
-Module 10 (`pages/10_Data_Import.py`) demonstrates:
-- `pd.read_csv()` and `pd.read_excel()` for multi-format ingestion.
-- `df.head()` and `df.describe()` for statistical exploration (count, mean, std, min, 25%, 50%, 75%, max).
-- `df.isnull().sum()` for missing value detection.
-- `df.dropna(subset=['Name'])` to eliminate nameless rows.
-- `df.drop_duplicates()` to remove redundant entries.
-- `df.fillna()` with column means for numerical imputation.
-- `df.clip(lower=0.0, upper=100.0)` to ensure marks strictly stay within valid academic bounds.
-- `df.pivot_table()`, `df.groupby()`, and `df.corr()` for analytical aggregations and correlation matrices.
-
 ---
 
 ### Section 4: Academic Intelligence & Visualization
 
-#### Q10. How is grading and pass/fail status computed?
+#### Q13. How is grading and pass/fail status computed?
 **Answer:**  
 - **Letter Grades**:
   - $A+$: $90\% - 100\%$
@@ -106,7 +127,7 @@ Module 10 (`pages/10_Data_Import.py`) demonstrates:
   - $F$: Below $50\%$
 - **Pass/Fail Threshold**: A student attains **Pass** status only if their score in **every subject** meets or exceeds the configured passing threshold of **40 marks**. If even a single course is $< 40$, the student is marked as **Fail**.
 
-#### Q11. How are personalized recommendations and risk tiers determined?
+#### Q14. How are personalized recommendations and risk tiers determined?
 **Answer:**  
 We employ transparent, rule-based diagnostic algorithms:
 - **Subject-Level Guidance**:
@@ -119,7 +140,7 @@ We employ transparent, rule-based diagnostic algorithms:
   - **Medium Risk**: Average $< 65$, 1 or more weak subjects, or attendance $< 75\%$.
   - **Low Risk**: Consistently passing on track.
 
-#### Q12. Explain the 3D visualizations used in the project.
+#### Q15. Explain the 3D visualizations used in the project.
 **Answer:**  
 Using Plotly Graph Objects (`go.Scatter3d`, `go.Mesh3d`), the application renders high-dimensional projections:
 1. **3D Spatial Performance Projection**: Maps `Semester (X)` × `Average Marks (Y)` × `Total Points (Z)` with rank-weighted marker dimensions.
@@ -127,7 +148,7 @@ Using Plotly Graph Objects (`go.Scatter3d`, `go.Mesh3d`), the application render
 3. **3D Student × Subject Coordinate Space**: Multi-dimensional scatter tracking all students across courses simultaneously.
 4. **3D Forecast Coordinate Projection**: Compares `Latest Score (X)` × `Forecasted Score (Y)` × `Expected Delta (Z)` to visualize student academic trajectories.
 
-#### Q13. How does the report generation system work?
+#### Q16. How does the report generation system work?
 **Answer:**  
 - **PDF Generation**: Powered by **ReportLab** (`SimpleDocTemplate`, `Table`, `TableStyle`, `ParagraphStyle`). It renders official landscape and portrait reports with alternating row colors, table borders, institutional headers, and timestamps.
 - **Excel Generation**: Uses **Pandas** with the **OpenPyXL** engine to construct multi-sheet workbooks (`Performance`, `Subjects`, `Attendance`, `Departments`).
