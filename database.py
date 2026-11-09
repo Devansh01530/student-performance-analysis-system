@@ -8,10 +8,13 @@ from datetime import datetime
 DB_PATH = os.path.join("data", "students.db")
 
 
-def get_connection():
+def get_connection(db_path=None):
     """Returns a connection to the SQLite database with foreign keys enabled."""
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    target_path = db_path or DB_PATH
+    dir_name = os.path.dirname(target_path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+    conn = sqlite3.connect(target_path)
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
@@ -222,10 +225,10 @@ def save_marks(student_id, subject, marks, exam_id=1):
     conn.close()
 
 
-def get_marks(exam_id=None):
+def get_marks(exam_id=None, student_id=None):
     """
     Returns student marks joined with student metadata.
-    If exam_id is provided, filters by examination.
+    Supports optional filtering by exam_id and/or student_id.
     Always includes both 'id' and 'student_id' columns.
     """
     conn = get_connection()
@@ -243,11 +246,15 @@ def get_marks(exam_id=None):
         FROM students
         JOIN marks ON students.id = marks.student_id
         LEFT JOIN examinations ON marks.exam_id = examinations.id
+        WHERE 1=1
     """
     params = []
     if exam_id is not None:
-        query += " WHERE marks.exam_id = ?"
+        query += " AND marks.exam_id = ?"
         params.append(exam_id)
+    if student_id is not None:
+        query += " AND marks.student_id = ?"
+        params.append(student_id)
 
     query += " ORDER BY students.name, marks.subject"
     df = pd.read_sql_query(query, conn, params=params)
