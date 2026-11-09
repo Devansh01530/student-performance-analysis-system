@@ -100,7 +100,7 @@ The application has been verified and tested under Python with the following lib
 
 All unit tests run in strictly isolated temporary SQLite databases (`tempfile`) and never modify the production demonstrator database (`data/students.db`).
 
-Execute the automated test suite (21 unit tests across analysis, database, and validation):
+Execute the automated test suite (30 unit tests across analysis, database, and validation):
 ```bash
 python -m unittest discover -s tests
 ```
