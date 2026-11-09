@@ -1,12 +1,61 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-.DS_Store
-*.db-journal
-reports/students_backup_*.db
+*.py[cod]
+*$py.class
 
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment configuration & secrets
+.env
+.env.*
+*.env
+
+# SQLite Databases & runtime storage
+*.db
+*.sqlite3
+*.db-journal
+data/*.db
+data/*.sqlite3
+
+# Generated Reports & Export Artifacts
+reports/*.pdf
+reports/*.xlsx
+reports/*.csv
+reports/*.db
+*.pdf
+*.xlsx
+
+# Streamlit internal configuration
+.streamlit/secrets.toml
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini

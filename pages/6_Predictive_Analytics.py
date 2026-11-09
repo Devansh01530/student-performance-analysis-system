@@ -35,33 +35,48 @@ else:
         if c not in ["id", "name", "department", "semester", "Average", "Total", "Grade", "Status", "Rank"]
     ]
 
-    target_choice = st.selectbox(
-        "Prediction Target Variable",
-        ["Overall Academic Average"] + [f"Subject: {s}" for s in subject_cols],
-    )
+    col_cfg1, col_cfg2 = st.columns(2)
+    with col_cfg1:
+        target_choice = st.selectbox(
+            "Prediction Target Variable",
+            ["Overall Academic Average"] + [f"Subject: {s}" for s in subject_cols],
+        )
+    with col_cfg2:
+        strategy_choice = st.selectbox(
+            "Model Evaluation Partition Strategy",
+            [
+                "Student-Grouped Holdout (Zero Student History Leakage)",
+                "Chronological Timeline Split (Train Earlier Exams -> Test Latest)",
+            ],
+            help="Student-Grouped isolates entire students into train or test, ensuring test students are never seen during training. Chronological trains on earlier exams and tests on subsequent examinations.",
+        )
 
     target_subject = None
     if target_choice.startswith("Subject: "):
         target_subject = target_choice.replace("Subject: ", "")
 
+    eval_strategy = "chronological" if "Chronological" in strategy_choice else "student_grouped"
+
     # Train Models
-    ml_output = train_and_evaluate_models(target_subject=target_subject)
+    ml_output = train_and_evaluate_models(target_subject=target_subject, eval_strategy=eval_strategy)
 
     if ml_output.get("status") == "insufficient_data":
         st.warning(ml_output["message"])
     else:
+        held_out_students_str = ", ".join(ml_output.get("test_students", []))
         st.markdown(
-            """
+            f"""
             <div class="card-3d" style="border-left: 4px solid #38bdf8; margin-bottom: 20px;">
                 <div style="font-size: 0.8rem; text-transform: uppercase; color: #38bdf8; font-weight: 700;">
-                    Zero Data Leakage Architecture
+                    Rigorous Evaluation & Zero Data Leakage Architecture
                 </div>
                 <div style="font-size: 1.15rem; font-weight: 600; color: #ffffff; margin-top: 4px;">
-                    Longitudinal Examination-to-Examination Forecasting
+                    {ml_output.get('eval_strategy_name')}
                 </div>
                 <div style="font-size: 0.88rem; color: #94a3b8; margin-top: 6px; line-height: 1.6;">
-                    Unlike naive models that predict an average using the same subject marks that comprise it, this predictive engine trains
-                    strictly on historical transitions from prior examinations (Internal 1, Internal 2, Mid-Term) to forecast performance in subsequent examinations.
+                    • <b>Partition Independence</b>: Model evaluated on {ml_output.get('test_size', 0)} held-out transition samples (Held-out students: {held_out_students_str}).
+                    <br>• <b>Historical Attendance Isolation</b>: Attendance is computed strictly using logs recorded prior to the respective examination date, completely eliminating future attendance leakage.
+                    <br>• <b>Longitudinal Structure</b>: Forecasts future examination scores ($Exam_{{t+1}}$) strictly from prior examination records ($Exam_t$).
                 </div>
             </div>
             """,

@@ -1,16 +1,17 @@
 """
 Predictive Analytics and Machine Learning Engine for Academic Performance.
 Longitudinal examination-to-examination performance forecasting with zero data leakage:
-- Uses historical examination marks (Internal 1, Internal 2, Mid-Term) to predict subsequent examination performance
+- Evaluated via Student-Grouped Partitioning (GroupShuffleSplit: no student in test exists in train)
+  or Chronological Progression Partitioning (train on earlier examinations, test on later milestones).
+- Uses strictly historical attendance records logged prior to the target examination.
 - Algorithms: Linear Regression, Decision Tree Regression, Random Forest Regression
-- Independent holdout Train-Test splitting
 - Metric Evaluations: MAE, MSE, RMSE, R-squared
 - Upcoming examination forecast for currently enrolled students
 """
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.linear_model import LinearRegression
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.ensemble import RandomForestRegressor
@@ -22,18 +23,19 @@ import database
 def build_examination_transitions_dataset(target_subject=None):
     """
     Constructs a sequential dataset mapping Exam(t) -> Exam(t+1) performance.
-    Guarantees ZERO data leakage by predicting future examination results
-    strictly from prior examination records and attendance.
+    Guarantees zero data leakage by:
+    1. Predicting future examination results strictly from prior examination records.
+    2. Calculating attendance strictly from historical logs recorded up to the prior examination date.
     """
     progress = database.get_all_exam_progress()
-    att_df = database.get_attendance_summary()
 
     if progress.empty or len(progress["exam_id"].unique()) < 2:
         return None, None, []
 
-    # Pivot to get wide marks per student per examination
+    # Include exam_date in pivot index
+    index_cols = ["student_id", "name", "department", "semester", "exam_id", "exam_name", "exam_date"]
     pivot = progress.pivot_table(
-        index=["student_id", "name", "department", "semester", "exam_id", "exam_name"],
+        index=index_cols,
         columns="subject",
         values="marks",
         aggfunc="mean",
@@ -41,22 +43,23 @@ def build_examination_transitions_dataset(target_subject=None):
 
     subject_cols = [
         c for c in pivot.columns
-        if c not in ["student_id", "name", "department", "semester", "exam_id", "exam_name"]
+        if c not in index_cols
     ]
 
     pivot["Exam_Average"] = pivot[subject_cols].mean(axis=1).round(2)
 
-    # Attendance mapping
-    att_dict = {}
-    if not att_df.empty:
-        for _, a_row in att_df.iterrows():
-            pct = a_row["attendance_percentage"]
-            if pd.notna(pct) and pct is not None:
-                att_dict[a_row["student_id"]] = float(pct)
-
-    # Mean recorded attendance fallback (or 75.0 if completely unrecorded)
-    valid_att_vals = list(att_dict.values())
-    default_att = float(np.mean(valid_att_vals)) if valid_att_vals else 75.0
+    # Pre-fetch and cache historical attendance strictly as of each unique exam date
+    unique_exam_dates = pivot["exam_date"].dropna().unique()
+    historical_att_by_date = {}
+    for ed in unique_exam_dates:
+        att_hist = database.get_attendance_summary(before_date=str(ed))
+        att_map = {}
+        if not att_hist.empty:
+            for _, a_row in att_hist.iterrows():
+                pct = a_row["attendance_percentage"]
+                if pd.notna(pct) and pct is not None:
+                    att_map[a_row["student_id"]] = float(pct)
+        historical_att_by_date[str(ed)] = att_map
 
     transitions = []
     latest_exam_per_student = {}
@@ -65,21 +68,37 @@ def build_examination_transitions_dataset(target_subject=None):
         sorted_g = group.sort_values("exam_id").reset_index(drop=True)
         latest_exam_per_student[s_id] = sorted_g.iloc[-1]
 
-        student_att = att_dict.get(s_id, default_att)
-
         for i in range(len(sorted_g) - 1):
             prev_row = sorted_g.iloc[i]
             next_row = sorted_g.iloc[i + 1]
+
+            prev_date = str(prev_row["exam_date"])
+            att_map_for_date = historical_att_by_date.get(prev_date, {})
+            
+            # Historical attendance strictly up to prior examination date
+            if s_id in att_map_for_date:
+                student_hist_att = att_map_for_date[s_id]
+                att_recorded = 1
+            else:
+                # If unrecorded at that historical timestamp, use recorded historical cohort mean or 75.0 baseline
+                cohort_known = list(att_map_for_date.values())
+                student_hist_att = float(np.mean(cohort_known)) if cohort_known else 75.0
+                att_recorded = 0
 
             record = {
                 "student_id": s_id,
                 "name": prev_row["name"],
                 "department": prev_row["department"],
                 "semester": prev_row["semester"],
+                "from_exam_id": prev_row["exam_id"],
+                "to_exam_id": next_row["exam_id"],
                 "from_exam": prev_row["exam_name"],
                 "to_exam": next_row["exam_name"],
+                "from_exam_date": prev_date,
+                "to_exam_date": str(next_row["exam_date"]),
                 "Prev_Average": prev_row["Exam_Average"],
-                "Attendance_Pct": student_att,
+                "Attendance_Pct": round(student_hist_att, 2),
+                "Attendance_Recorded": att_recorded,
             }
 
             for sub in subject_cols:
@@ -93,17 +112,26 @@ def build_examination_transitions_dataset(target_subject=None):
     return transitions_df, latest_exam_per_student, subject_cols
 
 
-def train_and_evaluate_models(target_subject=None):
+def train_and_evaluate_models(target_subject=None, eval_strategy="student_grouped"):
     """
     Trains regression models to predict NEXT examination performance from PREVIOUS examination marks.
+    Evaluation Strategies:
+    - 'student_grouped': GroupShuffleSplit on student_id. Zero student history leakage: all transition pairs
+      for any student in the test set are completely withheld from the training set.
+    - 'chronological': Splits by examination timeline. Trains on earlier examinations and tests on the latest milestone.
+
     Returns:
     - status: 'success' or 'insufficient_data'
-    - target: target variable name
+    - target: target variable display name
+    - eval_strategy_name: display description of the evaluation methodology
     - metrics: DataFrame comparing algorithms (MAE, MSE, RMSE, R2)
     - best_model: name of best performing algorithm
     - test_comparison: actual vs predicted on held-out test transitions
     - cohort_predictions: forecasted scores in the UPCOMING examination for current students
-    - transitions_count: number of transition pairs used in training
+    - transitions_count: total transition pairs
+    - train_size: number of training samples
+    - test_size: number of testing samples
+    - test_students: list of student names in the test holdout
     """
     transitions_df, latest_exams, subject_cols = build_examination_transitions_dataset(target_subject)
 
@@ -113,10 +141,8 @@ def train_and_evaluate_models(target_subject=None):
             "message": "Longitudinal prediction requires at least two examination events in the database to train transition models.",
         }
 
-    # Features: Prior Exam Average, Prior Course Marks, and Attendance Rate
     feature_cols = ["Prev_Average", "Attendance_Pct"] + [f"Prev_{sub}" for sub in subject_cols if f"Prev_{sub}" in transitions_df.columns]
 
-    # Target: Next Exam Average or Next Exam Target Subject
     if target_subject and f"Next_{target_subject}" in transitions_df.columns:
         target_col = f"Next_{target_subject}"
         target_display_name = f"Next Exam: {target_subject}"
@@ -127,11 +153,32 @@ def train_and_evaluate_models(target_subject=None):
     X = transitions_df[feature_cols].copy()
     y = transitions_df[target_col].copy()
 
-    # Train-test split (25% holdout)
-    test_size = 0.25 if len(transitions_df) >= 12 else 0.33
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=42
-    )
+    # Apply selected evaluation partition strategy
+    if eval_strategy == "chronological" and len(transitions_df["to_exam_id"].unique()) >= 2:
+        max_target_exam = transitions_df["to_exam_id"].max()
+        train_mask = transitions_df["to_exam_id"] < max_target_exam
+        test_mask = transitions_df["to_exam_id"] == max_target_exam
+
+        # Verify both splits have data
+        if train_mask.sum() >= 4 and test_mask.sum() >= 2:
+            X_train, y_train = X[train_mask], y[train_mask]
+            X_test, y_test = X[test_mask], y[test_mask]
+            test_indices = transitions_df[test_mask].index
+            eval_strategy_name = "Chronological Timeline Split (Trained on Earlier Exams, Evaluated on Latest Exam)"
+        else:
+            eval_strategy = "student_grouped"
+
+    if eval_strategy == "student_grouped":
+        # GroupShuffleSplit by student_id: guarantees zero student leakage between train and test
+        groups = transitions_df["student_id"]
+        test_fraction = 0.25 if len(transitions_df["student_id"].unique()) >= 8 else 0.33
+        gss = GroupShuffleSplit(n_splits=1, test_size=test_fraction, random_state=42)
+        train_idx, test_idx = next(gss.split(X, y, groups=groups))
+
+        X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
+        X_test, y_test = X.iloc[test_idx], y.iloc[test_idx]
+        test_indices = transitions_df.iloc[test_idx].index
+        eval_strategy_name = "Student-Grouped Holdout (Zero Student Overlap: Test Students Completely Unseen in Training)"
 
     models = {
         "Linear Regression": LinearRegression(),
@@ -164,8 +211,8 @@ def train_and_evaluate_models(target_subject=None):
     best_model_name = metrics_df.sort_values(by="RMSE").iloc[0]["Algorithm"]
     best_model = models[best_model_name]
 
-    # Test Actual vs Predicted comparison
-    test_rows = transitions_df.loc[X_test.index]
+    # Test Actual vs Predicted comparison on strictly held-out partition
+    test_rows = transitions_df.loc[test_indices]
     best_test_preds = np.clip(predictions_dict[best_model_name], 0.0, 100.0).round(2)
 
     comparison_df = pd.DataFrame({
@@ -177,12 +224,14 @@ def train_and_evaluate_models(target_subject=None):
         "Absolute Error": np.abs(y_test.values - best_test_preds).round(2),
     })
 
+    test_students = sorted(list(test_rows["name"].unique()))
+
     # Forecast UPCOMING next examination for currently enrolled students
-    # Use each student's most recent examination as input features
-    att_df = database.get_attendance_summary()
+    # Use each student's most recent examination and their up-to-date recorded attendance
+    current_att_df = database.get_attendance_summary()
     att_map = {}
-    if not att_df.empty:
-        for _, a_row in att_df.iterrows():
+    if not current_att_df.empty:
+        for _, a_row in current_att_df.iterrows():
             pct = a_row["attendance_percentage"]
             if pd.notna(pct) and pct is not None:
                 att_map[a_row["student_id"]] = float(pct)
@@ -232,12 +281,16 @@ def train_and_evaluate_models(target_subject=None):
     return {
         "status": "success",
         "target": target_display_name,
+        "eval_strategy_name": eval_strategy_name,
         "is_small_sample": len(transitions_df) < 30,
         "metrics": metrics_df,
         "best_model": best_model_name,
         "test_comparison": comparison_df,
         "cohort_predictions": cohort_pred_df,
         "transitions_count": len(transitions_df),
+        "train_size": len(X_train),
+        "test_size": len(X_test),
+        "test_students": test_students,
     }
 
 

@@ -295,6 +295,7 @@ def get_all_exam_progress():
             students.semester,
             examinations.id AS exam_id,
             examinations.name AS exam_name,
+            examinations.exam_date,
             marks.subject,
             marks.marks
         FROM marks
@@ -365,23 +366,43 @@ def get_attendance(student_id=None, subject=None, date=None):
     return df
 
 
-def get_attendance_summary():
-    """Calculates attendance statistics per student."""
-    conn = get_connection()
-    query = """
-        SELECT
-            students.id AS student_id,
-            students.name,
-            students.department,
-            students.semester,
-            COUNT(attendance.id) AS total_classes,
-            SUM(CASE WHEN attendance.status = 'Present' THEN 1 ELSE 0 END) AS classes_attended
-        FROM students
-        LEFT JOIN attendance ON students.id = attendance.student_id
-        GROUP BY students.id, students.name, students.department, students.semester
-        ORDER BY students.id
+def get_attendance_summary(before_date=None):
     """
-    df = pd.read_sql_query(query, conn)
+    Calculates attendance statistics per student.
+    If before_date is provided, strictly filters attendance logs to attendance_date <= before_date.
+    This prevents future attendance records from leaking into historical ML prediction evaluations.
+    """
+    conn = get_connection()
+    if before_date:
+        query = """
+            SELECT
+                students.id AS student_id,
+                students.name,
+                students.department,
+                students.semester,
+                COUNT(attendance.id) AS total_classes,
+                SUM(CASE WHEN attendance.status = 'Present' THEN 1 ELSE 0 END) AS classes_attended
+            FROM students
+            LEFT JOIN attendance ON students.id = attendance.student_id AND attendance.attendance_date <= ?
+            GROUP BY students.id, students.name, students.department, students.semester
+            ORDER BY students.id
+        """
+        df = pd.read_sql_query(query, conn, params=[before_date])
+    else:
+        query = """
+            SELECT
+                students.id AS student_id,
+                students.name,
+                students.department,
+                students.semester,
+                COUNT(attendance.id) AS total_classes,
+                SUM(CASE WHEN attendance.status = 'Present' THEN 1 ELSE 0 END) AS classes_attended
+            FROM students
+            LEFT JOIN attendance ON students.id = attendance.student_id
+            GROUP BY students.id, students.name, students.department, students.semester
+            ORDER BY students.id
+        """
+        df = pd.read_sql_query(query, conn)
     conn.close()
 
     if df.empty:
@@ -404,6 +425,11 @@ def get_attendance_summary():
     df["attendance_percentage"] = df.apply(calc_pct, axis=1)
     df["attendance_status"] = df.apply(calc_status, axis=1)
     return df
+
+
+def get_historical_attendance_summary(before_date):
+    """Convenience alias for get_attendance_summary(before_date)."""
+    return get_attendance_summary(before_date=before_date)
 
 
 # ---------------------------------------------------------
@@ -439,18 +465,32 @@ def get_subjects(department_id=None):
 def import_students_from_csv(file_path, overwrite=False):
     """
     Safely imports student records and subject marks from a CSV file.
+    - Standardizes and normalizes column headers (case-insensitive metadata mapping).
     - If overwrite is False (default): preserves existing students and attendance,
       inserting only new students or updating marks for existing students.
     - If overwrite is True: safely deletes in foreign-key order (attendance -> marks -> students)
       and resets the database tables cleanly.
     """
     df = pd.read_csv(file_path)
-    df.columns = df.columns.str.strip().str.replace("*", "", regex=False)
+    
+    canonical_map = {
+        "name": "Name", "student_name": "Name", "studentname": "Name", "full_name": "Name",
+        "department": "Department", "dept": "Department", "branch": "Department",
+        "semester": "Semester", "sem": "Semester", "term": "Semester",
+        "email": "Email", "e-mail": "Email", "email_id": "Email",
+        "id": "Student_ID", "student_id": "Student_ID", "roll_no": "Student_ID",
+    }
+    renamed = {}
+    for col in df.columns:
+        c_clean = str(col).strip().replace("*", "").replace("#", "")
+        c_lower = c_clean.lower().replace(" ", "_").replace("-", "_")
+        renamed[col] = canonical_map.get(c_lower, c_clean)
+    df = df.rename(columns=renamed)
 
     if "Name" not in df.columns:
         raise ValueError("CSV must contain a 'Name' column.")
 
-    subjects = [col for col in df.columns if col not in ["Name", "Department", "Semester", "Email"]]
+    subjects = [col for col in df.columns if col not in ["Name", "Department", "Semester", "Email", "Student_ID"]]
     if not subjects:
         raise ValueError("No subject columns detected in file.")
 
