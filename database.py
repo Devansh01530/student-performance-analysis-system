@@ -3,6 +3,14 @@ import pandas as pd
 import os
 import shutil
 from datetime import datetime
+from utils.validation import (
+    validate_mark_value,
+    validate_semester_value,
+    validate_email_value,
+    validate_student_id_value,
+    validate_student_record,
+    normalize_headers,
+)
 
 # Database location
 DB_PATH = os.path.join("data", "students.db")
@@ -146,14 +154,20 @@ def _seed_initial_reference_data(cursor):
 # ---------------------------------------------------------
 
 def add_student(name, email, department, semester):
-    """Enrolls a new student."""
+    """Enrolls a new student with strict validation."""
+    validate_student_record(name, email, department, semester)
+    clean_email = validate_email_value(email, required=False)
+    clean_sem = validate_semester_value(semester)
+    clean_name = str(name).strip()
+    clean_dept = str(department).strip()
+
     conn = get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute("""
             INSERT INTO students (name, email, department, semester)
             VALUES (?, ?, ?, ?)
-        """, (name, email, department, semester))
+        """, (clean_name, clean_email, clean_dept, clean_sem))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
@@ -171,7 +185,16 @@ def get_students():
 
 
 def update_student(student_id, name, email, department, semester):
-    """Updates student demographic data."""
+    """Updates student demographic data with strict validation."""
+    clean_id = validate_student_id_value(student_id)
+    if not clean_id:
+        raise ValueError("Invalid student ID for update.")
+    validate_student_record(name, email, department, semester)
+    clean_email = validate_email_value(email, required=False)
+    clean_sem = validate_semester_value(semester)
+    clean_name = str(name).strip()
+    clean_dept = str(department).strip()
+
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -179,7 +202,7 @@ def update_student(student_id, name, email, department, semester):
             UPDATE students
             SET name = ?, email = ?, department = ?, semester = ?
             WHERE id = ?
-        """, (name, email, department, semester, student_id))
+        """, (clean_name, clean_email, clean_dept, clean_sem, clean_id))
         conn.commit()
         return cursor.rowcount > 0
     except sqlite3.IntegrityError:
@@ -204,23 +227,34 @@ def delete_student(student_id):
 # ---------------------------------------------------------
 
 def save_marks(student_id, subject, marks, exam_id=1):
-    """Saves or updates subject marks for a given examination."""
+    """Saves or updates subject marks with range and data-type validation."""
+    clean_id = validate_student_id_value(student_id)
+    if not clean_id:
+        raise ValueError(f"Student ID '{student_id}' must be a positive integer.")
+    clean_exam_id = validate_student_id_value(exam_id) if exam_id is not None else 1
+    if not clean_exam_id:
+        raise ValueError(f"Exam ID '{exam_id}' must be a positive integer.")
+    if not subject or not str(subject).strip():
+        raise ValueError("Subject name cannot be empty.")
+    clean_subject = str(subject).strip()
+    clean_marks = validate_mark_value(marks)
+
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id FROM marks
         WHERE student_id = ? AND subject = ? AND exam_id = ?
-    """, (student_id, subject, exam_id))
+    """, (clean_id, clean_subject, clean_exam_id))
     existing = cursor.fetchone()
     if existing:
         cursor.execute("""
             UPDATE marks SET marks = ? WHERE id = ?
-        """, (marks, existing[0]))
+        """, (clean_marks, existing[0]))
     else:
         cursor.execute("""
             INSERT INTO marks (student_id, subject, marks, exam_id)
             VALUES (?, ?, ?, ?)
-        """, (student_id, subject, marks, exam_id))
+        """, (clean_id, clean_subject, clean_marks, clean_exam_id))
     conn.commit()
     conn.close()
 
@@ -469,16 +503,19 @@ def get_subjects(department_id=None):
 # Data Import from CSV & DataFrame
 # ---------------------------------------------------------
 
-def import_student_dataframe(df, overwrite=False):
+def import_student_dataframe(df, overwrite=False, allow_updates=False):
     """
     Consolidated atomic import pipeline for student profiles and marks.
     Enforces:
     - Canonical column header mapping with duplicate header detection.
-    - Semester validation (strictly between 1 and 12).
+    - Semester validation (strictly integer between 1 and 12).
     - Email regex format validation.
-    - Student_ID handling (preserves or matches explicit Student_ID).
-    - Multi-criteria matching: Student_ID -> Email -> (Name, Department).
-    - Transaction rollback on exception.
+    - Strict positive integer Student_ID validation (rejects decimals/floats like 22.5, zeros, negatives).
+    - Append mode safety: if overwrite=False and allow_updates=False,
+      conflicts with existing database records are rejected with descriptive ValueError.
+    - If allow_updates=True, updates matching records.
+    - If overwrite=True, safely purges existing tables in foreign-key order.
+    - Atomic transaction rollback on any exception.
     """
     if df.empty:
         raise ValueError("Cannot import an empty dataset.")
@@ -526,35 +563,36 @@ def import_student_dataframe(df, overwrite=False):
     # Validate Semesters strictly 1-12
     if "Semester" in work_df.columns:
         for idx, sem_val in work_df["Semester"].items():
-            if pd.isna(sem_val):
-                raise ValueError(f"Row {idx + 1}: Missing semester value.")
             try:
-                sem_int = int(sem_val)
-                if sem_int < 1 or sem_int > 12:
-                    raise ValueError(f"Row {idx + 1}: Invalid semester {sem_int}. Must be an integer between 1 and 12.")
-            except (ValueError, TypeError):
-                raise ValueError(f"Row {idx + 1}: Semester '{sem_val}' is not a valid integer between 1 and 12.")
+                validate_semester_value(sem_val)
+            except ValueError as ve:
+                raise ValueError(f"Row {idx + 1}: {ve}")
 
     # Validate Email format
-    import re
-    email_regex = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
     if "Email" in work_df.columns:
         for idx, em_val in work_df["Email"].items():
-            if pd.notna(em_val) and str(em_val).strip() not in ["", "nan", "none"]:
-                if not email_regex.match(str(em_val).strip()):
-                    raise ValueError(f"Row {idx + 1}: Invalid email address format '{em_val}'.")
+            if pd.notna(em_val) and str(em_val).strip() not in ["", "nan", "none", "null"]:
+                try:
+                    validate_email_value(em_val)
+                except ValueError as ve:
+                    raise ValueError(f"Row {idx + 1}: {ve}")
+
+    # Validate Student_ID values strictly if present (reject floats like 22.5, 0, negative)
+    if "Student_ID" in work_df.columns:
+        for idx, id_val in work_df["Student_ID"].items():
+            if pd.notna(id_val) and str(id_val).strip() not in ["", "nan", "none", "null"]:
+                try:
+                    validate_student_id_value(id_val)
+                except ValueError as ve:
+                    raise ValueError(f"Row {idx + 1}: {ve}")
 
     # Validate numeric marks [0, 100]
     for sub in subjects:
         for idx, m_val in work_df[sub].items():
-            if pd.isna(m_val):
-                raise ValueError(f"Row {idx + 1}: Missing mark in subject '{sub}'.")
             try:
-                f_val = float(m_val)
-                if f_val < 0.0 or f_val > 100.0:
-                    raise ValueError(f"Row {idx + 1}: Mark {f_val} in subject '{sub}' is outside [0, 100].")
-            except (ValueError, TypeError):
-                raise ValueError(f"Row {idx + 1}: Non-numeric mark '{m_val}' in subject '{sub}'.")
+                validate_mark_value(m_val)
+            except ValueError as ve:
+                raise ValueError(f"Row {idx + 1}: {ve} in subject '{sub}'.")
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -568,35 +606,43 @@ def import_student_dataframe(df, overwrite=False):
         for _, row in work_df.iterrows():
             s_name = str(row["Name"]).strip()
             dept = str(row["Department"]).strip() if "Department" in work_df.columns and pd.notna(row["Department"]) and str(row["Department"]).strip() != "" else "BCA"
-            sem = int(row["Semester"]) if "Semester" in work_df.columns and pd.notna(row["Semester"]) else 3
-            email = str(row["Email"]).strip() if "Email" in work_df.columns and pd.notna(row["Email"]) and str(row["Email"]).strip() not in ["", "nan", "none"] else None
+            sem = validate_semester_value(row["Semester"]) if "Semester" in work_df.columns and pd.notna(row["Semester"]) else 3
+            email = validate_email_value(row["Email"]) if "Email" in work_df.columns and pd.notna(row["Email"]) else None
 
             given_id = None
             if "Student_ID" in work_df.columns and pd.notna(row["Student_ID"]):
-                try:
-                    given_id = int(row["Student_ID"])
-                except (ValueError, TypeError):
-                    given_id = None
+                given_id = validate_student_id_value(row["Student_ID"])
 
             student_id = None
+            conflict_reason = None
             if not overwrite:
                 if given_id is not None:
-                    cursor.execute("SELECT id FROM students WHERE id = ?", (given_id,))
+                    cursor.execute("SELECT id, name FROM students WHERE id = ?", (given_id,))
                     match = cursor.fetchone()
                     if match:
                         student_id = match[0]
+                        conflict_reason = f"Student ID {given_id} already exists (enrolled as '{match[1]}')"
 
                 if student_id is None and email:
-                    cursor.execute("SELECT id FROM students WHERE email = ?", (email,))
+                    cursor.execute("SELECT id, name FROM students WHERE LOWER(email) = LOWER(?)", (email,))
                     match = cursor.fetchone()
                     if match:
                         student_id = match[0]
+                        conflict_reason = f"Email '{email}' already exists (enrolled as '{match[1]}')"
 
                 if student_id is None:
-                    cursor.execute("SELECT id FROM students WHERE name = ? AND department = ?", (s_name, dept))
+                    cursor.execute("SELECT id FROM students WHERE LOWER(name) = LOWER(?) AND LOWER(department) = LOWER(?)", (s_name, dept))
                     match = cursor.fetchone()
                     if match:
                         student_id = match[0]
+                        conflict_reason = f"Student '{s_name}' in department '{dept}' already exists (ID: {match[0]})"
+
+                if student_id is not None and not allow_updates:
+                    raise ValueError(
+                        f"Row {processed_count + 1}: Conflict detected - {conflict_reason}. "
+                        "In Append mode, existing records are protected from silent overwriting. "
+                        "To update existing records, choose 'Update Existing Records', or select 'Overwrite Database' with explicit confirmation."
+                    )
 
             if student_id is not None:
                 cursor.execute("""
@@ -627,7 +673,7 @@ def import_student_dataframe(df, overwrite=False):
                     student_id = cursor.lastrowid
 
             for subject in subjects:
-                score = float(row[subject])
+                score = validate_mark_value(row[subject])
                 cursor.execute("""
                     SELECT id FROM marks
                     WHERE student_id = ? AND subject = ? AND exam_id = 1
@@ -652,10 +698,10 @@ def import_student_dataframe(df, overwrite=False):
         conn.close()
 
 
-def import_students_from_csv(file_path, overwrite=False):
+def import_students_from_csv(file_path, overwrite=False, allow_updates=False):
     """Safely imports student records and subject marks from a CSV file."""
     df = pd.read_csv(file_path)
-    return import_student_dataframe(df, overwrite=overwrite)
+    return import_student_dataframe(df, overwrite=overwrite, allow_updates=allow_updates)
 
 
 # ---------------------------------------------------------

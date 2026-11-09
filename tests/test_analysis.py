@@ -213,6 +213,21 @@ class TestAnalysis(unittest.TestCase):
         self.assertIn("cohort_predictions", output)
         self.assertEqual(len(output["cohort_predictions"]), 8)
 
+    def test_department_and_semester_performance_examination_scoping(self):
+        """Verify department and semester metrics respect the requested examination scope."""
+        dept_ex1 = get_department_performance(exam_id=1)
+        dept_ex4 = get_department_performance(exam_id=4)
+        sem_ex1 = get_semester_performance(exam_id=1)
+        sem_ex4 = get_semester_performance(exam_id=4)
+
+        self.assertFalse(dept_ex1.empty)
+        self.assertFalse(dept_ex4.empty)
+        self.assertGreater(dept_ex4.iloc[0]["Average"], dept_ex1.iloc[0]["Average"])
+
+        self.assertFalse(sem_ex1.empty)
+        self.assertFalse(sem_ex4.empty)
+        self.assertGreater(sem_ex4.iloc[0]["Average"], sem_ex1.iloc[0]["Average"])
+
 
 if __name__ == "__main__":
     unittest.main()

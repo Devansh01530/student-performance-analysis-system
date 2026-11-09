@@ -113,9 +113,10 @@ def generate_pdf_report(dataframe: pd.DataFrame, title: str, subtitle: str = Non
     return buffer.getvalue()
 
 
-def generate_student_report_card_pdf(student_id: int) -> bytes:
+def generate_student_report_card_pdf(student_id: int, exam_id=None, allow_all=False) -> bytes:
     """
-    Builds an Individual Academic Report Card with subject marks, attendance, and recommendations.
+    Builds an Individual Academic Report Card with subject marks, attendance, and recommendations
+    scoped to a specific examination milestone or comprehensive aggregate.
     """
     buffer = BytesIO()
     doc = SimpleDocTemplate(
@@ -157,17 +158,18 @@ def generate_student_report_card_pdf(student_id: int) -> bytes:
         textColor=colors.HexColor("#334155"),
     )
 
-    rec = generate_student_recommendations(student_id)
+    rec = generate_student_recommendations(student_id, exam_id=exam_id, allow_all=allow_all)
     if not rec:
         return b""
 
     students = database.get_students()
     s_info = students[students["id"] == student_id].iloc[0]
+    exam_scope_str = rec.get("exam_scope", "Selected Examination")
 
     elements = [
         Paragraph("OFFICIAL ACADEMIC REPORT CARD", title_style),
         Spacer(1, 4),
-        Paragraph("STUDENT PERFORMANCE INTELLIGENCE SYSTEM", ParagraphStyle(name="Sub", parent=body_style, alignment=1)),
+        Paragraph(f"STUDENT PERFORMANCE INTELLIGENCE SYSTEM | {exam_scope_str.upper()}", ParagraphStyle(name="Sub", parent=body_style, alignment=1)),
         Spacer(1, 16),
     ]
 
@@ -176,8 +178,8 @@ def generate_student_report_card_pdf(student_id: int) -> bytes:
     details = [
         ["Student Name", rec["name"], "Student ID", str(rec["id"])],
         ["Department", s_info["department"], "Semester", str(s_info["semester"])],
-        ["Institutional Rank", str(rec["rank"]), "Overall Grade", rec["grade"]],
-        ["Cohort Average", f"{rec['average']:.2f}", "Status", rec["status"]],
+        ["Evaluation Scope", exam_scope_str, "Institutional Rank", str(rec["rank"])],
+        ["Cohort Average", f"{rec['average']:.2f}", "Overall Grade", rec["grade"]],
         ["Attendance Rate", att_str, "Risk Level", rec["risk_level"]],
     ]
 

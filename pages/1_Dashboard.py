@@ -190,7 +190,7 @@ else:
     macro1, macro2 = st.columns(2)
 
     with macro1:
-        dept_df = get_department_performance()
+        dept_df = get_department_performance(exam_id=sel_exam_id, allow_all=sel_allow_all)
         if not dept_df.empty:
             fig_dept = px.bar(
                 dept_df,
@@ -212,7 +212,7 @@ else:
             st.plotly_chart(fig_dept, use_container_width=True)
 
     with macro2:
-        sem_df = get_semester_performance()
+        sem_df = get_semester_performance(exam_id=sel_exam_id, allow_all=sel_allow_all)
         if not sem_df.empty:
             fig_sem = px.bar(
                 sem_df,

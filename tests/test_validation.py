@@ -7,16 +7,17 @@ import pandas as pd
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import database
-import importlib
 from utils.validation import (
     validate_student_record,
     validate_student_dataframe,
     validate_marks_dataframe,
+    validate_student_id_value,
+    validate_semester_value,
+    validate_mark_value,
+    validate_email_value,
+    normalize_headers,
+    audit_and_validate_dataset,
 )
-
-data_import_mod = importlib.import_module("pages.10_Data_Import")
-audit_and_validate_dataset = data_import_mod.audit_and_validate_dataset
-normalize_headers = data_import_mod.normalize_headers
 
 
 class TestValidation(unittest.TestCase):
@@ -124,6 +125,67 @@ class TestValidation(unittest.TestCase):
         after_marks = len(database.get_marks())
         self.assertEqual(initial_students, after_students)
         self.assertEqual(initial_marks, after_marks)
+
+    def test_student_id_validator(self):
+        """Verify strict positive integer check for Student ID."""
+        self.assertEqual(validate_student_id_value(10), 10)
+        self.assertEqual(validate_student_id_value("25"), 25)
+        self.assertIsNone(validate_student_id_value(None))
+        self.assertIsNone(validate_student_id_value(""))
+
+        # Decimals/floats, negatives, zeros
+        with self.assertRaises(ValueError):
+            validate_student_id_value(22.5)
+        with self.assertRaises(ValueError):
+            validate_student_id_value("22.5")
+        with self.assertRaises(ValueError):
+            validate_student_id_value(0)
+        with self.assertRaises(ValueError):
+            validate_student_id_value(-5)
+        with self.assertRaises(ValueError):
+            validate_student_id_value("invalid_id")
+
+    def test_semester_validator(self):
+        """Verify semester range 1-12 integer validation."""
+        self.assertEqual(validate_semester_value(1), 1)
+        self.assertEqual(validate_semester_value(12), 12)
+        self.assertEqual(validate_semester_value("6"), 6)
+
+        with self.assertRaises(ValueError):
+            validate_semester_value(0)
+        with self.assertRaises(ValueError):
+            validate_semester_value(13)
+        with self.assertRaises(ValueError):
+            validate_semester_value(2.5)
+        with self.assertRaises(ValueError):
+            validate_semester_value("not_a_sem")
+
+    def test_mark_validator(self):
+        """Verify mark range 0.0-100.0 numeric validation."""
+        self.assertEqual(validate_mark_value(0.0), 0.0)
+        self.assertEqual(validate_mark_value(100.0), 100.0)
+        self.assertEqual(validate_mark_value(85.456), 85.46)
+        self.assertEqual(validate_mark_value("92.5"), 92.5)
+
+        with self.assertRaises(ValueError):
+            validate_mark_value(-0.5)
+        with self.assertRaises(ValueError):
+            validate_mark_value(100.1)
+        with self.assertRaises(ValueError):
+            validate_mark_value("invalid_mark")
+        with self.assertRaises(ValueError):
+            validate_mark_value(None)
+
+    def test_email_validator(self):
+        """Verify RFC compliant email regex validator."""
+        self.assertEqual(validate_email_value("Student@Example.Com"), "student@example.com")
+        self.assertIsNone(validate_email_value(None))
+        self.assertIsNone(validate_email_value(""))
+
+        with self.assertRaises(ValueError):
+            validate_email_value("invalid_email")
+        with self.assertRaises(ValueError):
+            validate_email_value("missing@domain")
 
 
 if __name__ == "__main__":

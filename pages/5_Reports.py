@@ -165,7 +165,7 @@ else:
 
     with col_pdf:
         if is_individual:
-            pdf_data = generate_student_report_card_pdf(sel_student_id)
+            pdf_data = generate_student_report_card_pdf(sel_student_id, exam_id=sel_exam_id, allow_all=sel_allow_all)
             pdf_filename = f"report_card_student_{sel_student_id}.pdf"
         else:
             pdf_data = generate_pdf_report(report_df, report_title)
