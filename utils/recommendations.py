@@ -1,9 +1,9 @@
 """
 Intelligent Academic Recommendation & Risk Detection Engine.
 Provides:
+- Shared canonical academic risk classification (Low, Medium, High Risk)
 - Rule-based subject-specific diagnostics
 - Personalized strengths and weaknesses analysis
-- Academic risk classification (Low, Medium, High Risk)
 - Actionable improvement strategies for individual students and cohorts
 """
 
@@ -12,32 +12,80 @@ import database
 from utils.analysis import get_student_performance
 
 
-def generate_student_recommendations(student_id: int) -> dict:
+def classify_student_risk(avg_score: float, status: str, att_pct: float | None = None, weakness_count: int = 0) -> tuple[str, str]:
+    """
+    Unified, single canonical academic risk classification function.
+    Shared identically across individual student recommendations and cohort risk overviews.
+
+    Decision Rules:
+    1. High Risk:
+       - Status is 'Fail' (scored < 40 in any subject)
+       - OR Average < 45.0
+       - OR Attendance is recorded and < 70.0%
+       Action: Immediate faculty intervention, remedial tutoring, and mandatory attendance monitoring.
+
+    2. Medium Risk:
+       - Not High Risk, AND:
+       - Average < 65.0
+       - OR Weakness count >= 1 (any subject scored < 70.0)
+       - OR Attendance is recorded and < 75.0%
+       Action: Targeted assignment reviews and supplemental practice sessions.
+
+    3. Low Risk:
+       - Pass status, Average >= 65.0, 0 weaknesses, attendance >= 75.0% (or attendance unrecorded).
+       Action: Performance on track. Continue balanced study schedule and challenge assignments.
+
+    Boundary Rules:
+    - Average == 45.0 with Pass status and good attendance -> Medium Risk (not High Risk)
+    - Average == 65.0 with Pass status, 0 weaknesses, good attendance -> Low Risk
+    - Attendance == 70.0% -> Medium Risk (not High Risk)
+    - Attendance == 75.0% -> Low Risk
+    - Missing attendance (None) -> Does NOT penalize the student to High or Medium risk.
+
+    Returns:
+    (risk_category, recommended_action)
+    """
+    is_low_att = (att_pct is not None and att_pct < 70.0)
+    is_med_att = (att_pct is not None and att_pct < 75.0)
+
+    if status == "Fail" or avg_score < 45.0 or is_low_att:
+        risk_level = "High Risk"
+        risk_action = "Immediate faculty intervention, remedial tutoring, and mandatory attendance monitoring."
+    elif avg_score < 65.0 or weakness_count >= 1 or is_med_att:
+        risk_level = "Medium Risk"
+        risk_action = "Targeted assignment reviews and supplemental practice sessions."
+    else:
+        risk_level = "Low Risk"
+        risk_action = "Performance on track. Continue balanced study schedule and challenge assignments."
+
+    return risk_level, risk_action
+
+
+def generate_student_recommendations(student_id: int, exam_id=None, allow_all=False) -> dict:
     """
     Generates personalized academic diagnosis and recommendations for a single student.
     Evaluates:
-    - Overall grade and average
+    - Overall grade and average for the selected examination scope
     - Subject-by-subject marks
     - Strengths and areas requiring focus
     - Attendance correlation
-    - Risk classification
+    - Risk classification using canonical shared rules
     """
-    students = database.get_students()
-    all_marks = database.get_marks()
-    perf = get_student_performance()
+    all_marks = database.get_marks(exam_id=exam_id, student_id=student_id)
+    perf = get_student_performance(exam_id=exam_id, allow_all=allow_all)
     att_df = database.get_attendance_summary()
 
     if perf.empty or student_id not in perf["id"].values:
         return {}
 
     s_row = perf[perf["id"] == student_id].iloc[0]
-    s_marks = all_marks[all_marks["id"] == student_id]
 
     student_name = s_row["name"]
     avg_score = float(s_row["Average"])
     grade = s_row["Grade"]
     status = s_row["Status"]
     rank = int(s_row["Rank"])
+    exam_scope = s_row.get("Exam_Scope", "Current Examination")
 
     # Attendance (None if not recorded)
     att_pct = None
@@ -51,7 +99,7 @@ def generate_student_recommendations(student_id: int) -> dict:
     strengths = []
     weaknesses = []
 
-    for _, m_row in s_marks.iterrows():
+    for _, m_row in all_marks.iterrows():
         subj = m_row["subject"]
         score = float(m_row["marks"])
 
@@ -79,26 +127,18 @@ def generate_student_recommendations(student_id: int) -> dict:
             "advice": advice,
         })
 
-    # Overall Risk Level
-    # Rules: Fail status or avg < 45 or recorded attendance < 70% -> High Risk
-    # Avg between 45 and 65 or 1 weakness or recorded attendance < 75% -> Medium Risk
-    # Else Low Risk
-    is_low_att = (att_pct is not None and att_pct < 70.0)
-    is_med_att = (att_pct is not None and att_pct < 75.0)
-
-    if status == "Fail" or avg_score < 45.0 or is_low_att:
-        risk_level = "High Risk"
-        risk_action = "Immediate faculty intervention, remedial tutoring, and mandatory attendance monitoring."
-    elif avg_score < 65.0 or len(weaknesses) >= 1 or is_med_att:
-        risk_level = "Medium Risk"
-        risk_action = "Targeted assignment reviews and supplemental practice sessions."
-    else:
-        risk_level = "Low Risk"
-        risk_action = "Performance on track. Continue balanced study schedule and challenge assignments."
+    # Classify risk using shared canonical function
+    risk_level, risk_action = classify_student_risk(
+        avg_score=avg_score,
+        status=status,
+        att_pct=att_pct,
+        weakness_count=len(weaknesses),
+    )
 
     return {
         "id": student_id,
         "name": student_name,
+        "exam_scope": exam_scope,
         "average": avg_score,
         "grade": grade,
         "rank": rank,
@@ -112,15 +152,19 @@ def generate_student_recommendations(student_id: int) -> dict:
     }
 
 
-def get_cohort_risk_overview() -> pd.DataFrame:
+def get_cohort_risk_overview(exam_id=None, allow_all=False) -> pd.DataFrame:
     """
-    Categorizes all students in the cohort into Low, Medium, or High Risk tiers.
+    Categorizes all students in the cohort into Low, Medium, or High Risk tiers
+    using the shared canonical classify_student_risk() function.
     """
-    perf = get_student_performance()
+    perf = get_student_performance(exam_id=exam_id, allow_all=allow_all)
     att_df = database.get_attendance_summary()
 
     if perf.empty:
         return pd.DataFrame()
+
+    meta_cols = ["id", "name", "department", "semester", "Average", "Total", "Grade", "Status", "Rank", "Exam_Scope", "Exam_ID"]
+    subject_cols = [c for c in perf.columns if c not in meta_cols]
 
     results = []
     for _, row in perf.iterrows():
@@ -134,15 +178,19 @@ def get_cohort_risk_overview() -> pd.DataFrame:
             if pd.notna(val) and val is not None:
                 att_pct = float(val)
 
-        is_low_att = (att_pct is not None and att_pct < 70.0)
-        is_med_att = (att_pct is not None and att_pct < 75.0)
+        # Count subjects scored < 70
+        weakness_count = 0
+        for sub in subject_cols:
+            if pd.notna(row[sub]) and float(row[sub]) < 70.0:
+                weakness_count += 1
 
-        if status == "Fail" or avg < 45.0 or is_low_att:
-            risk = "High Risk"
-        elif avg < 65.0 or is_med_att:
-            risk = "Medium Risk"
-        else:
-            risk = "Low Risk"
+        # Classify risk using unified shared function
+        risk_level, _ = classify_student_risk(
+            avg_score=avg,
+            status=status,
+            att_pct=att_pct,
+            weakness_count=weakness_count,
+        )
 
         results.append({
             "Rank": int(row["Rank"]),
@@ -154,8 +202,8 @@ def get_cohort_risk_overview() -> pd.DataFrame:
             "Grade": row["Grade"],
             "Status": status,
             "Attendance_Pct": f"{att_pct:.1f}%" if att_pct is not None else "Not Recorded",
-            "Risk_Category": risk,
+            "Risk_Category": risk_level,
+            "Exam_Scope": row.get("Exam_Scope", "Evaluated Scope"),
         })
 
     return pd.DataFrame(results).sort_values("Rank")
-

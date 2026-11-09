@@ -33,14 +33,47 @@ st.write(
 
 st.divider()
 
-# Core Data
-performance = get_student_performance()
-subjects = get_subject_analysis()
-metrics = get_dashboard_metrics()
+# Examination Scope Filter
+exams = database.get_examinations()
+exam_scope_options = []
+if not exams.empty:
+    exams_sorted = exams.copy()
+    exams_sorted["parsed_date"] = pd.to_datetime(exams_sorted["exam_date"], errors="coerce")
+    exams_sorted = exams_sorted.sort_values(by=["parsed_date", "id"], na_position="first")
+    latest_exam = exams_sorted.iloc[-1]
+    
+    exam_scope_options.append((f"Latest Examination: {latest_exam['name']}", int(latest_exam["id"]), False))
+    for _, r in exams.iterrows():
+        exam_scope_options.append((f"Single Examination: {r['name']}", int(r["id"]), False))
+    exam_scope_options.append(("Cumulative Across All Examinations (Intentionally Aggregated)", None, True))
+
+col_rep_scope, _ = st.columns([1, 2])
+with col_rep_scope:
+    sel_rep_label = st.selectbox(
+        "Report Examination Scope",
+        options=[opt[0] for opt in exam_scope_options] if exam_scope_options else ["Default Scope"],
+        index=0,
+    )
+
+sel_exam_id = None
+sel_allow_all = False
+for label, e_id, allow_all in exam_scope_options:
+    if label == sel_rep_label:
+        sel_exam_id = e_id
+        sel_allow_all = allow_all
+        break
+
+# Core Data for selected examination scope
+performance = get_student_performance(exam_id=sel_exam_id, allow_all=sel_allow_all)
+subjects = get_subject_analysis(exam_id=sel_exam_id, allow_all=sel_allow_all)
+metrics = get_dashboard_metrics(exam_id=sel_exam_id, allow_all=sel_allow_all)
 students = database.get_students()
 
 if performance.empty:
-    st.info("No academic records available for dossier generation.")
+    st.info("No academic records available for dossier generation in this examination scope.")
+else:
+    active_scope_name = performance.iloc[0].get("Exam_Scope", "Selected Examination Scope")
+    st.caption(f"Active Report Evaluation Scope: **{active_scope_name}**")
 else:
     # Summary Cards
     st.subheader("Executive Cohort Summary")
@@ -91,12 +124,12 @@ else:
         is_individual = False
 
     elif selected_report == "Department Performance Report":
-        report_df = get_department_performance()
+        report_df = get_department_performance(exam_id=sel_exam_id, allow_all=sel_allow_all)
         report_title = "Department-Wise Comparative Performance Report"
         is_individual = False
 
     elif selected_report == "Semester Performance Report":
-        report_df = get_semester_performance()
+        report_df = get_semester_performance(exam_id=sel_exam_id, allow_all=sel_allow_all)
         report_title = "Semester-Wise Academic Progression Report"
         is_individual = False
 

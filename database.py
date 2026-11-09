@@ -466,86 +466,165 @@ def get_subjects(department_id=None):
 
 
 # ---------------------------------------------------------
-# Data Import from CSV
+# Data Import from CSV & DataFrame
 # ---------------------------------------------------------
 
-def import_students_from_csv(file_path, overwrite=False):
+def import_student_dataframe(df, overwrite=False):
     """
-    Safely imports student records and subject marks from a CSV file.
-    - Standardizes and normalizes column headers (case-insensitive metadata mapping).
-    - If overwrite is False (default): preserves existing students and attendance,
-      inserting only new students or updating marks for existing students.
-    - If overwrite is True: safely deletes in foreign-key order (attendance -> marks -> students)
-      and resets the database tables cleanly.
+    Consolidated atomic import pipeline for student profiles and marks.
+    Enforces:
+    - Canonical column header mapping with duplicate header detection.
+    - Semester validation (strictly between 1 and 12).
+    - Email regex format validation.
+    - Student_ID handling (preserves or matches explicit Student_ID).
+    - Multi-criteria matching: Student_ID -> Email -> (Name, Department).
+    - Transaction rollback on exception.
     """
-    df = pd.read_csv(file_path)
-    
+    if df.empty:
+        raise ValueError("Cannot import an empty dataset.")
+
     canonical_map = {
-        "name": "Name", "student_name": "Name", "studentname": "Name", "full_name": "Name",
-        "department": "Department", "dept": "Department", "branch": "Department",
+        "name": "Name", "student_name": "Name", "studentname": "Name", "full_name": "Name", "fullname": "Name",
+        "department": "Department", "dept": "Department", "branch": "Department", "stream": "Department",
         "semester": "Semester", "sem": "Semester", "term": "Semester",
-        "email": "Email", "e-mail": "Email", "email_id": "Email",
-        "id": "Student_ID", "student_id": "Student_ID", "roll_no": "Student_ID",
+        "email": "Email", "e-mail": "Email", "email_id": "Email", "mail": "Email",
+        "id": "Student_ID", "student_id": "Student_ID", "studentid": "Student_ID", "roll_no": "Student_ID", "rollno": "Student_ID",
     }
+
     renamed = {}
+    normalized_list = []
     for col in df.columns:
         c_clean = str(col).strip().replace("*", "").replace("#", "")
         c_lower = c_clean.lower().replace(" ", "_").replace("-", "_")
-        renamed[col] = canonical_map.get(c_lower, c_clean)
-    df = df.rename(columns=renamed)
+        target_name = canonical_map.get(c_lower, c_clean)
+        renamed[col] = target_name
+        normalized_list.append(target_name)
 
-    if "Name" not in df.columns:
-        raise ValueError("CSV must contain a 'Name' column.")
+    # Detect duplicate columns after normalization
+    counts = pd.Series(normalized_list).value_counts()
+    dup_cols = counts[counts > 1].index.tolist()
+    if dup_cols:
+        raise ValueError(f"Duplicate column headers detected after normalization: {', '.join(dup_cols)}.")
 
-    subjects = [col for col in df.columns if col not in ["Name", "Department", "Semester", "Email", "Student_ID"]]
+    work_df = df.rename(columns=renamed).copy()
+
+    if "Name" not in work_df.columns:
+        raise ValueError("Dataset must contain a student 'Name' column.")
+
+    subjects = [col for col in work_df.columns if col not in ["Name", "Department", "Semester", "Email", "Student_ID"]]
     if not subjects:
-        raise ValueError("No subject columns detected in file.")
+        raise ValueError("No subject score columns detected in dataset.")
 
-    for subject in subjects:
-        df[subject] = pd.to_numeric(df[subject], errors="coerce")
+    # Validate Names
+    for idx, name_val in work_df["Name"].items():
+        s_name = str(name_val).strip() if pd.notna(name_val) else ""
+        if not s_name or s_name.lower() in ["nan", "null", "none", ""]:
+            raise ValueError(f"Row {idx + 1}: Empty or invalid student name.")
+        if len(s_name) < 2:
+            raise ValueError(f"Row {idx + 1}: Student name too short.")
 
-    if df["Name"].isna().any() or df[subjects].isna().any().any():
-        raise ValueError("CSV contains missing or invalid student data.")
+    # Validate Semesters strictly 1-12
+    if "Semester" in work_df.columns:
+        for idx, sem_val in work_df["Semester"].items():
+            if pd.isna(sem_val):
+                raise ValueError(f"Row {idx + 1}: Missing semester value.")
+            try:
+                sem_int = int(sem_val)
+                if sem_int < 1 or sem_int > 12:
+                    raise ValueError(f"Row {idx + 1}: Invalid semester {sem_int}. Must be an integer between 1 and 12.")
+            except (ValueError, TypeError):
+                raise ValueError(f"Row {idx + 1}: Semester '{sem_val}' is not a valid integer between 1 and 12.")
 
-    if ((df[subjects] < 0) | (df[subjects] > 100)).any().any():
-        raise ValueError("Marks must be between 0 and 100.")
+    # Validate Email format
+    import re
+    email_regex = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
+    if "Email" in work_df.columns:
+        for idx, em_val in work_df["Email"].items():
+            if pd.notna(em_val) and str(em_val).strip() not in ["", "nan", "none"]:
+                if not email_regex.match(str(em_val).strip()):
+                    raise ValueError(f"Row {idx + 1}: Invalid email address format '{em_val}'.")
+
+    # Validate numeric marks [0, 100]
+    for sub in subjects:
+        for idx, m_val in work_df[sub].items():
+            if pd.isna(m_val):
+                raise ValueError(f"Row {idx + 1}: Missing mark in subject '{sub}'.")
+            try:
+                f_val = float(m_val)
+                if f_val < 0.0 or f_val > 100.0:
+                    raise ValueError(f"Row {idx + 1}: Mark {f_val} in subject '{sub}' is outside [0, 100].")
+            except (ValueError, TypeError):
+                raise ValueError(f"Row {idx + 1}: Non-numeric mark '{m_val}' in subject '{sub}'.")
 
     conn = get_connection()
     cursor = conn.cursor()
     try:
         if overwrite:
-            # Clean up all related tables in foreign-key referential order
             cursor.execute("DELETE FROM attendance")
             cursor.execute("DELETE FROM marks")
             cursor.execute("DELETE FROM students")
 
         processed_count = 0
-        for _, row in df.iterrows():
+        for _, row in work_df.iterrows():
             s_name = str(row["Name"]).strip()
-            dept = str(row["Department"]).strip() if "Department" in df.columns and pd.notna(row["Department"]) else "BCA"
-            sem = int(row["Semester"]) if "Semester" in df.columns and pd.notna(row["Semester"]) else 3
-            email = str(row["Email"]).strip() if "Email" in df.columns and pd.notna(row["Email"]) and str(row["Email"]).strip() != "" else None
+            dept = str(row["Department"]).strip() if "Department" in work_df.columns and pd.notna(row["Department"]) and str(row["Department"]).strip() != "" else "BCA"
+            sem = int(row["Semester"]) if "Semester" in work_df.columns and pd.notna(row["Semester"]) else 3
+            email = str(row["Email"]).strip() if "Email" in work_df.columns and pd.notna(row["Email"]) and str(row["Email"]).strip() not in ["", "nan", "none"] else None
+
+            given_id = None
+            if "Student_ID" in work_df.columns and pd.notna(row["Student_ID"]):
+                try:
+                    given_id = int(row["Student_ID"])
+                except (ValueError, TypeError):
+                    given_id = None
 
             student_id = None
             if not overwrite:
-                # Check for existing student
-                if email:
+                if given_id is not None:
+                    cursor.execute("SELECT id FROM students WHERE id = ?", (given_id,))
+                    match = cursor.fetchone()
+                    if match:
+                        student_id = match[0]
+
+                if student_id is None and email:
                     cursor.execute("SELECT id FROM students WHERE email = ?", (email,))
                     match = cursor.fetchone()
                     if match:
                         student_id = match[0]
+
                 if student_id is None:
                     cursor.execute("SELECT id FROM students WHERE name = ? AND department = ?", (s_name, dept))
                     match = cursor.fetchone()
                     if match:
                         student_id = match[0]
 
-            if student_id is None:
+            if student_id is not None:
                 cursor.execute("""
-                    INSERT INTO students (name, email, department, semester)
-                    VALUES (?, ?, ?, ?)
-                """, (s_name, email, dept, sem))
-                student_id = cursor.lastrowid
+                    UPDATE students
+                    SET name = ?, email = COALESCE(?, email), department = ?, semester = ?
+                    WHERE id = ?
+                """, (s_name, email, dept, sem, student_id))
+            else:
+                if given_id is not None:
+                    cursor.execute("SELECT id FROM students WHERE id = ?", (given_id,))
+                    if not cursor.fetchone():
+                        cursor.execute("""
+                            INSERT INTO students (id, name, email, department, semester)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (given_id, s_name, email, dept, sem))
+                        student_id = given_id
+                    else:
+                        cursor.execute("""
+                            INSERT INTO students (name, email, department, semester)
+                            VALUES (?, ?, ?, ?)
+                        """, (s_name, email, dept, sem))
+                        student_id = cursor.lastrowid
+                else:
+                    cursor.execute("""
+                        INSERT INTO students (name, email, department, semester)
+                        VALUES (?, ?, ?, ?)
+                    """, (s_name, email, dept, sem))
+                    student_id = cursor.lastrowid
 
             for subject in subjects:
                 score = float(row[subject])
@@ -566,11 +645,17 @@ def import_students_from_csv(file_path, overwrite=False):
 
         conn.commit()
         return processed_count
-    except Exception:
+    except Exception as e:
         conn.rollback()
-        raise
+        raise e
     finally:
         conn.close()
+
+
+def import_students_from_csv(file_path, overwrite=False):
+    """Safely imports student records and subject marks from a CSV file."""
+    df = pd.read_csv(file_path)
+    return import_student_dataframe(df, overwrite=overwrite)
 
 
 # ---------------------------------------------------------

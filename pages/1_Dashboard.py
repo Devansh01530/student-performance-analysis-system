@@ -27,6 +27,8 @@ st.set_page_config(
 apply_custom_css()
 add_sidebar_branding()
 
+import database
+
 # Title
 st.title("Academic Performance Dashboard")
 st.write(
@@ -35,15 +37,48 @@ st.write(
 
 st.divider()
 
-# Load Core Data
-performance = get_student_performance()
-subjects = get_subject_analysis()
-metrics = get_dashboard_metrics()
+# Examination Scope Selection
+exams = database.get_examinations()
+exam_scope_options = []
+if not exams.empty:
+    exams_sorted = exams.copy()
+    exams_sorted["parsed_date"] = pd.to_datetime(exams_sorted["exam_date"], errors="coerce")
+    exams_sorted = exams_sorted.sort_values(by=["parsed_date", "id"], na_position="first")
+    latest_exam = exams_sorted.iloc[-1]
+    
+    exam_scope_options.append((f"Latest Examination: {latest_exam['name']}", int(latest_exam["id"]), False))
+    for _, r in exams.iterrows():
+        exam_scope_options.append((f"Single Examination: {r['name']}", int(r["id"]), False))
+    exam_scope_options.append(("Cumulative Across All Examinations (Intentionally Aggregated)", None, True))
+
+col_es, _ = st.columns([1, 2])
+with col_es:
+    sel_label = st.selectbox(
+        "Examination Evaluation Scope",
+        options=[opt[0] for opt in exam_scope_options] if exam_scope_options else ["Default Scope"],
+    )
+
+sel_exam_id = None
+sel_allow_all = False
+for label, e_id, allow_all in exam_scope_options:
+    if label == sel_label:
+        sel_exam_id = e_id
+        sel_allow_all = allow_all
+        break
+
+# Load Core Data for selected examination scope
+performance = get_student_performance(exam_id=sel_exam_id, allow_all=sel_allow_all)
+subjects = get_subject_analysis(exam_id=sel_exam_id, allow_all=sel_allow_all)
+metrics = get_dashboard_metrics(exam_id=sel_exam_id, allow_all=sel_allow_all)
 att_stats = get_attendance_analytics()
 
 if performance.empty:
-    st.info("No student records available in the database. Use Student Management to enroll students.")
+    st.info("No student records available in the database for the selected examination scope. Use Student Management or Data Import to add records.")
 else:
+    # Active Scope Indicator
+    active_scope_name = performance.iloc[0].get("Exam_Scope", "Selected Examination Scope")
+    st.caption(f"Active Evaluation Scope: **{active_scope_name}**")
+
     # Interactive Filters
     col_f1, col_f2 = st.columns(2)
     with col_f1:

@@ -97,7 +97,12 @@ else:
         metrics_df = ml_output["metrics"]
         st.dataframe(metrics_df, use_container_width=True, hide_index=True)
 
-        st.caption(f"Top performing algorithm by minimum RMSE: **{ml_output['best_model']}**")
+        st.caption(f"Top performing algorithm by minimum RMSE on holdout partition: **{ml_output['best_model']}** (retrained on full historical cohort for production forecasting)")
+        st.caption(
+            "Evaluation Metric Guidance: MAE and RMSE represent prediction error in marks (lower is better). "
+            "R-squared (R2 Score) is the statistical coefficient of determination measuring the proportion of variance explained by prior exam marks. "
+            "R2 is NOT percentage prediction accuracy and can be negative on small holdouts when predictions have higher residual variance than the mean."
+        )
 
         st.divider()
 
@@ -239,7 +244,8 @@ else:
         st.divider()
 
         # Interactive What-If Simulator
-        st.subheader("What-If Academic Intervention Simulator")
+        st.subheader("Rule-Based Scenario Simulator (Intervention Modeling)")
+        st.caption("Advisory Simulation Notice: This simulator employs a rule-based marginal returns formula with asymptotic saturation to model study habit adjustments. It is a deterministic advisory simulation tool, not an ML statistical model.")
         st.write("Simulate expected score trajectory for an individual student under altered study habits and attendance rates.")
 
         students = database.get_students()

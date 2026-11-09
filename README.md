@@ -48,9 +48,16 @@ The platform is organized into 10 dedicated functional modules:
 
 ## 4. Installation & Setup
 
-### Prerequisites
-- Python 3.10 or higher
-- Git
+### Verified Environment & Tested Dependencies
+The application has been verified and tested under Python with the following libraries:
+- `streamlit` (v1.64.0)
+- `pandas` (v3.0.6)
+- `numpy` (v2.5.3)
+- `plotly` (v7.1.0)
+- `matplotlib` (v3.11.2)
+- `reportlab` (v5.1.0)
+- `scikit-learn` (v1.9.1)
+- `openpyxl` (v3.1.5)
 
 ### Installation Steps
 
@@ -85,13 +92,15 @@ The platform is organized into 10 dedicated functional modules:
 - A student attains **Pass** status only if their score in **every subject** meets or exceeds the passing threshold of **40 marks**.
 
 ### Attendance Threshold
-- Minimum standard compliance threshold is set to **75%**. Students below 75% trigger administrative intervention notices.
+- Minimum standard compliance threshold is set to **75%**. Students below 75% trigger administrative intervention notices. Unrecorded attendance is strictly excluded from cohort averages.
 
 ---
 
 ## 6. Running Test Suite
 
-Execute the automated test suite with standard test discovery:
+All unit tests run in strictly isolated temporary SQLite databases (`tempfile`) and never modify the production demonstrator database (`data/students.db`).
+
+Execute the automated test suite (21 unit tests across analysis, database, and validation):
 ```bash
 python -m unittest discover -s tests
 ```

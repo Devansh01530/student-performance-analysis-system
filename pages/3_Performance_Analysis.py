@@ -25,26 +25,41 @@ st.divider()
 
 # Examination Selector
 exams = database.get_examinations()
+exam_options = []
+if not exams.empty:
+    exams_sorted = exams.copy()
+    exams_sorted["parsed_date"] = pd.to_datetime(exams_sorted["exam_date"], errors="coerce")
+    exams_sorted = exams_sorted.sort_values(by=["parsed_date", "id"], na_position="first")
+    latest_exam = exams_sorted.iloc[-1]
+    
+    exam_options.append((f"Latest Examination: {latest_exam['name']}", int(latest_exam["id"]), False))
+    for _, r in exams.iterrows():
+        exam_options.append((f"Single Examination: {r['name']}", int(r["id"]), False))
+    exam_options.append(("Cumulative Across All Examinations (Intentionally Aggregated)", None, True))
+
 col_ex, _ = st.columns([1, 2])
 with col_ex:
-    exam_options = [("All Examinations (Aggregated)", None)] + [
-        (r["name"], r["id"]) for _, r in exams.iterrows()
-    ]
-    selected_exam_label, selected_exam_id = st.selectbox(
+    selected_exam_label = st.selectbox(
         "Examination Evaluation Scope",
-        options=[opt[0] for opt in exam_options],
+        options=[opt[0] for opt in exam_options] if exam_options else ["Default Scope"],
         index=0,
-    ), [opt[1] for opt in exam_options if opt[0] == st.session_state.get("ex_label", exam_options[0][0])][0] if False else None
+    )
 
-# Map selection to id
-for label, e_id in exam_options:
+selected_exam_id = None
+selected_allow_all = False
+for label, e_id, allow_all in exam_options:
     if label == selected_exam_label:
         selected_exam_id = e_id
+        selected_allow_all = allow_all
         break
 
-df = get_student_performance(exam_id=selected_exam_id)
+df = get_student_performance(exam_id=selected_exam_id, allow_all=selected_allow_all)
 
 if df.empty:
+    st.info("No student performance records available for this selection.")
+else:
+    active_scope_name = df.iloc[0].get("Exam_Scope", "Selected Examination Scope")
+    st.caption(f"Active Evaluation Scope: **{active_scope_name}**")
     st.info("No student performance records available for this selection.")
 else:
     # Centralized Filter Matrix

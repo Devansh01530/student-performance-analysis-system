@@ -61,16 +61,16 @@ def normalize_headers(df):
     """
     Standardizes and normalizes dataframe column headers into canonical metadata names.
     Removes leading/trailing whitespace, punctuation asterisks/hashes,
-    and maps case-insensitive variants (department, DEPARTMENT, Dept) to standard names.
+    and maps case-insensitive variants to standard names.
     """
     renamed = {}
+    normalized_list = []
     for col in df.columns:
         c_str = str(col).strip().replace("*", "").replace("#", "")
         c_key = c_str.lower().replace(" ", "_").replace("-", "_")
-        if c_key in CANONICAL_METADATA_MAP:
-            renamed[col] = CANONICAL_METADATA_MAP[c_key]
-        else:
-            renamed[col] = c_str
+        target_name = CANONICAL_METADATA_MAP.get(c_key, c_str)
+        renamed[col] = target_name
+        normalized_list.append(target_name)
     return df.rename(columns=renamed)
 
 
@@ -78,16 +78,32 @@ def audit_and_validate_dataset(df):
     """
     Performs comprehensive pre-commit data validation.
     Verifies:
-    1. Student Names: non-empty, non-null, valid length.
-    2. Duplicates: within-dataset duplicate student names or emails.
-    3. Subject Marks: strictly numeric, non-null, strictly within [0, 100].
+    1. Duplicate normalized column headers.
+    2. Student Names: non-empty, non-null, valid length.
+    3. Within-file duplicates: duplicate names or duplicate emails.
+    4. Semester values: strictly between 1 and 12 (never silently defaulted).
+    5. Email format: valid email regex pattern.
+    6. Student_ID: valid integer if provided.
+    7. Subject Marks: strictly numeric, non-null, strictly within [0, 100].
     Returns:
     - is_valid (bool)
     - errors (list of dicts with Row, Column, Value, Description)
     - subject_cols (list of validated subject columns)
     """
     errors = []
-    
+
+    # Check 1: Duplicate column names after normalization
+    col_counts = pd.Series(df.columns).value_counts()
+    dup_cols = col_counts[col_counts > 1].index.tolist()
+    if dup_cols:
+        errors.append({
+            "Row": "Header",
+            "Column": str(dup_cols),
+            "Value": "Duplicate Column Names",
+            "Description": f"Duplicate column headers detected after normalization: {', '.join(dup_cols)}. Remove or rename duplicate columns.",
+        })
+        return False, errors, []
+
     if "Name" not in df.columns:
         errors.append({
             "Row": "-",
@@ -109,7 +125,7 @@ def audit_and_validate_dataset(df):
         })
         return False, errors, []
 
-    # Check 1: Student Names validation
+    # Check 2: Student Names validation
     for idx, val in df["Name"].items():
         row_num = idx + 1
         s_val = str(val).strip() if pd.notna(val) else ""
@@ -128,7 +144,7 @@ def audit_and_validate_dataset(df):
                 "Description": "Student name too short (minimum 2 characters required).",
             })
 
-    # Check 2: Within-file duplicates
+    # Check 3: Within-file duplicates
     name_counts = df["Name"].astype(str).str.strip().str.lower().value_counts()
     dup_names = name_counts[name_counts > 1].index.tolist()
     if dup_names:
@@ -155,9 +171,66 @@ def audit_and_validate_dataset(df):
                         "Description": "Duplicate email address found within dataset.",
                     })
 
-    # Check 3: Marks validation for every subject column
+    # Check 4: Semester strictly between 1 and 12
+    if "Semester" in df.columns:
+        for idx, val in df["Semester"].items():
+            row_num = idx + 1
+            if pd.isna(val):
+                errors.append({
+                    "Row": row_num,
+                    "Column": "Semester",
+                    "Value": "Missing (NaN)",
+                    "Description": "Semester is required and must be an integer between 1 and 12.",
+                })
+            else:
+                try:
+                    s_int = int(val)
+                    if s_int < 1 or s_int > 12:
+                        errors.append({
+                            "Row": row_num,
+                            "Column": "Semester",
+                            "Value": str(val),
+                            "Description": f"Semester {s_int} is outside acceptable academic range [1, 12].",
+                        })
+                except (ValueError, TypeError):
+                    errors.append({
+                        "Row": row_num,
+                        "Column": "Semester",
+                        "Value": str(val),
+                        "Description": "Non-integer semester value. Must be between 1 and 12.",
+                    })
+
+    # Check 5: Email format regex
+    email_regex = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
+    if "Email" in df.columns:
+        for idx, val in df["Email"].items():
+            row_num = idx + 1
+            if pd.notna(val) and str(val).strip() not in ["", "nan", "none"]:
+                if not email_regex.match(str(val).strip()):
+                    errors.append({
+                        "Row": row_num,
+                        "Column": "Email",
+                        "Value": str(val),
+                        "Description": f"Invalid email format: '{val}'. Expected format user@domain.com.",
+                    })
+
+    # Check 6: Student_ID validation
+    if "Student_ID" in df.columns:
+        for idx, val in df["Student_ID"].items():
+            row_num = idx + 1
+            if pd.notna(val) and str(val).strip() not in ["", "nan", "none"]:
+                try:
+                    int(val)
+                except (ValueError, TypeError):
+                    errors.append({
+                        "Row": row_num,
+                        "Column": "Student_ID",
+                        "Value": str(val),
+                        "Description": f"Student_ID '{val}' must be a valid integer.",
+                    })
+
+    # Check 7: Marks validation for every subject column
     for sc in subject_cols:
-        # Check if entire column is non-numeric
         coerced = pd.to_numeric(df[sc], errors="coerce")
         null_count = coerced.isnull().sum()
         if null_count == len(df):
@@ -255,14 +328,14 @@ if uploaded_file is not None:
         clean_opts = st.multiselect(
             "Select Cleaning Transformations to Apply",
             [
-                "Normalize column headers to canonical names (Department, Semester, Name, Email)",
+                "Normalize column headers to canonical names (Department, Semester, Name, Email, Student_ID)",
                 "Strip leading/trailing whitespace from text columns",
                 "Drop duplicate rows (Pandas drop_duplicates)",
                 "Drop rows containing empty student names",
                 "Clamp marks strictly to [0, 100] range",
             ],
             default=[
-                "Normalize column headers to canonical names (Department, Semester, Name, Email)",
+                "Normalize column headers to canonical names (Department, Semester, Name, Email, Student_ID)",
                 "Strip leading/trailing whitespace from text columns",
                 "Drop duplicate rows (Pandas drop_duplicates)",
                 "Drop rows containing empty student names",
@@ -273,7 +346,7 @@ if uploaded_file is not None:
         # Apply transformations
         clean_df = raw_df.copy()
 
-        if "Normalize column headers to canonical names (Department, Semester, Name, Email)" in clean_opts:
+        if "Normalize column headers to canonical names (Department, Semester, Name, Email, Student_ID)" in clean_opts:
             clean_df = normalize_headers(clean_df)
 
         if "Strip leading/trailing whitespace from text columns" in clean_opts:
@@ -288,7 +361,6 @@ if uploaded_file is not None:
         if not name_col:
             for c in clean_df.columns:
                 if str(c).strip().lower() in ["name", "student_name"]:
-                    name_col = c
                     clean_df = clean_df.rename(columns={c: "Name"})
                     name_col = "Name"
                     break
@@ -303,7 +375,6 @@ if uploaded_file is not None:
 
         if "Clamp marks strictly to [0, 100] range" in clean_opts and subject_cols:
             for sc in subject_cols:
-                # Convert numeric, leaving genuine unparseable values as NaN for strict rejection
                 clean_df[sc] = pd.to_numeric(clean_df[sc], errors="coerce")
                 clean_df[sc] = clean_df[sc].clip(lower=0.0, upper=100.0).round(2)
 
@@ -328,7 +399,7 @@ if uploaded_file is not None:
                         Dataset Ready for Database Insertion
                     </div>
                     <div style="font-size: 0.88rem; color: #94a3b8; margin-top: 4px;">
-                        All student names are valid, no duplicate records detected, and all subject marks are strictly numerical within [0, 100].
+                        All student names are valid, no duplicate records detected, semesters are strictly within [1, 12], and marks are strictly numerical within [0, 100].
                     </div>
                 </div>
                 """,
@@ -345,7 +416,7 @@ if uploaded_file is not None:
                         Database Commit Blocked Until Resolved
                     </div>
                     <div style="font-size: 0.88rem; color: #94a3b8; margin-top: 4px;">
-                        The dataset contains empty names, duplicate students, or invalid/missing marks. Review the audit table below.
+                        The dataset contains empty names, duplicate students, invalid semesters, or invalid/missing marks. Review the audit table below.
                     </div>
                 </div>
                 """,
@@ -390,7 +461,7 @@ if uploaded_file is not None:
         st.subheader("Step 6: Commit to Database")
 
         st.write(
-            "Committing imported dataset enrolls students and records their course marks in SQLite."
+            "Committing imported dataset executes an atomic SQLite transaction via the unified import pipeline."
         )
 
         commit_mode = st.radio(
@@ -409,72 +480,12 @@ if uploaded_file is not None:
             st.caption("Database import button is disabled until all validation errors are resolved or filtered out.")
 
         if st.button("Execute Database Import", disabled=not can_commit):
-            conn = database.get_connection()
-            cursor = conn.cursor()
-
             try:
-                if "Overwrite" in commit_mode:
-                    cursor.execute("DELETE FROM attendance")
-                    cursor.execute("DELETE FROM marks")
-                    cursor.execute("DELETE FROM students")
-
-                records_added = 0
-                for _, row in clean_df.iterrows():
-                    s_name = str(row["Name"]).strip()
-                    s_dept = str(row.get("Department", "BCA")).strip() if pd.notna(row.get("Department")) and str(row.get("Department", "")).strip() != "" else "BCA"
-                    
-                    try:
-                        s_sem = int(row.get("Semester", 3)) if pd.notna(row.get("Semester")) else 3
-                    except (ValueError, TypeError):
-                        s_sem = 3
-
-                    raw_email = row.get("Email")
-                    s_email = str(raw_email).strip() if pd.notna(raw_email) and str(raw_email).strip() not in ["", "nan", "none"] else None
-
-                    student_id = None
-                    if "Append" in commit_mode:
-                        if s_email:
-                            cursor.execute("SELECT id FROM students WHERE email = ?", (s_email,))
-                            match = cursor.fetchone()
-                            if match:
-                                student_id = match[0]
-                        if student_id is None:
-                            cursor.execute("SELECT id FROM students WHERE name = ? AND department = ?", (s_name, s_dept))
-                            match = cursor.fetchone()
-                            if match:
-                                student_id = match[0]
-
-                    if student_id is None:
-                        cursor.execute("""
-                            INSERT INTO students (name, email, department, semester)
-                            VALUES (?, ?, ?, ?)
-                        """, (s_name, s_email, s_dept, s_sem))
-                        student_id = cursor.lastrowid
-
-                    for sc in validated_subjects:
-                        mark_val = float(row[sc])
-                        cursor.execute("""
-                            SELECT id FROM marks
-                            WHERE student_id = ? AND subject = ? AND exam_id = 1
-                        """, (student_id, sc))
-                        m_match = cursor.fetchone()
-                        if m_match:
-                            cursor.execute("UPDATE marks SET marks = ? WHERE id = ?", (mark_val, m_match[0]))
-                        else:
-                            cursor.execute("""
-                                INSERT INTO marks (student_id, subject, marks, exam_id)
-                                VALUES (?, ?, ?, 1)
-                            """, (student_id, sc, mark_val))
-
-                    records_added += 1
-
-                conn.commit()
+                is_overwrite = "Overwrite" in commit_mode
+                records_added = database.import_student_dataframe(clean_df, overwrite=is_overwrite)
                 st.success(f"Database import complete. Successfully processed {records_added} student records and course marks.")
             except Exception as err:
-                conn.rollback()
                 st.error(f"Database import failed: {err}")
-            finally:
-                conn.close()
 
     except Exception as e:
         st.error(f"Failed to process file: {e}")
@@ -490,9 +501,10 @@ else:
                 Uploaded files should include the following schema:
                 <br>• <b>Name</b> (or Student_Name, Full_Name): Student full name (mandatory)
                 <br>• <b>Department</b> (or Dept, Branch): Academic department (case-insensitive, default: BCA)
-                <br>• <b>Semester</b> (or Sem): Semester number (optional, default: 3)
-                <br>• <b>Email</b>: Institutional email address (optional, duplicates flagged)
-                <br>• <b>Subject Columns</b>: Numerical score columns (e.g. Python, C++, Java, Data Structures) strictly within [0, 100]
+                <br>• <b>Semester</b> (or Sem): Semester number strictly between 1 and 12
+                <br>• <b>Email</b>: Institutional email address (format validated, duplicates flagged)
+                <br>• <b>Student_ID</b> (or Roll_No, ID): Optional student identifier (matched if present)
+                <br>• <b>Subject Columns</b>: Numerical score columns strictly within [0, 100]
             </div>
         </div>
         """,

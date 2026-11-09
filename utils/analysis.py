@@ -3,17 +3,49 @@ import numpy as np
 import database
 
 
-def get_student_performance(exam_id=None):
+def resolve_examination(exam_id=None, allow_all=False):
     """
-    Calculates comprehensive student performance metrics including:
-    - Subject marks in wide pivot
-    - Total marks
-    - Average marks
-    - Academic Grade (A+, A, B, C, D, F)
-    - Pass/Fail Status (based on passing threshold of 40 in all subjects)
-    - Cohort Ranking
+    Resolves the examination scope:
+    - If exam_id is specified: returns (exam_id, exam_name)
+    - If exam_id is None and allow_all is False: resolves to the latest valid examination
+    - If exam_id is None and allow_all is True: returns (None, 'Cumulative Across All Examinations')
     """
-    marks = database.get_marks(exam_id=exam_id)
+    exams = database.get_examinations()
+    if exams.empty:
+        return None, "No Examinations"
+
+    if exam_id is not None:
+        matched = exams[exams["id"] == exam_id]
+        if not matched.empty:
+            return exam_id, str(matched.iloc[0]["name"])
+        return exam_id, f"Examination {exam_id}"
+
+    if allow_all:
+        return None, "Cumulative Across All Examinations"
+
+    # Default to latest examination by exam_date, then id
+    exams_sorted = exams.copy()
+    exams_sorted["parsed_date"] = pd.to_datetime(exams_sorted["exam_date"], errors="coerce")
+    exams_sorted = exams_sorted.sort_values(by=["parsed_date", "id"], na_position="first")
+    latest = exams_sorted.iloc[-1]
+    return int(latest["id"]), str(latest["name"])
+
+
+def get_student_performance(exam_id=None, allow_all=False):
+    """
+    Calculates comprehensive student performance metrics for a specific examination scope.
+    Guarantees that marks from different examinations are not unintentionally averaged.
+    - If exam_id is provided: evaluates strictly that examination.
+    - If exam_id is None and allow_all is False (default): evaluates strictly the latest examination.
+    - If exam_id is None and allow_all is True: intentionally computes cumulative average,
+      explicitly labeled as 'Cumulative Across All Examinations'.
+    """
+    target_exam_id, target_exam_name = resolve_examination(exam_id, allow_all)
+
+    if target_exam_id is None and not allow_all:
+        return pd.DataFrame()
+
+    marks = database.get_marks(exam_id=target_exam_id)
 
     if marks.empty:
         return pd.DataFrame()
@@ -67,26 +99,31 @@ def get_student_performance(exam_id=None):
     # Dense Ranking by Average Score
     df["Rank"] = df["Average"].rank(method="dense", ascending=False).astype(int)
 
+    # Attach explicit examination metadata
+    df["Exam_Scope"] = target_exam_name
+    if target_exam_id is not None:
+        df["Exam_ID"] = target_exam_id
+
     return df.sort_values("Rank")
 
 
-def get_top_students(limit=5, exam_id=None):
-    """Returns top performing students."""
-    df = get_student_performance(exam_id=exam_id)
+def get_top_students(limit=5, exam_id=None, allow_all=False):
+    """Returns top performing students for a specific examination scope."""
+    df = get_student_performance(exam_id=exam_id, allow_all=allow_all)
     return df.head(limit) if not df.empty else df
 
 
-def get_weak_students(threshold=40.0, exam_id=None):
-    """Returns students needing academic intervention."""
-    df = get_student_performance(exam_id=exam_id)
+def get_weak_students(threshold=40.0, exam_id=None, allow_all=False):
+    """Returns students needing academic intervention for a specific examination scope."""
+    df = get_student_performance(exam_id=exam_id, allow_all=allow_all)
     if df.empty:
         return df
     return df[(df["Average"] < threshold) | (df["Status"] == "Fail")]
 
 
-def get_subject_analysis(exam_id=None):
+def get_subject_analysis(exam_id=None, allow_all=False):
     """
-    Computes subject statistics:
+    Computes subject statistics for a specific examination scope:
     - Average marks
     - Highest & Lowest marks
     - Pass percentage (marks >= 40)
@@ -94,7 +131,12 @@ def get_subject_analysis(exam_id=None):
     - Enrolled student count
     - Difficulty rating
     """
-    marks = database.get_marks(exam_id=exam_id)
+    target_exam_id, target_exam_name = resolve_examination(exam_id, allow_all)
+
+    if target_exam_id is None and not allow_all:
+        return pd.DataFrame()
+
+    marks = database.get_marks(exam_id=target_exam_id)
     if marks.empty:
         return pd.DataFrame()
 
@@ -122,15 +164,16 @@ def get_subject_analysis(exam_id=None):
             "Fail_Percentage": round(100.0 - pass_pct, 2),
             "Students": total,
             "Difficulty": difficulty,
+            "Exam_Scope": target_exam_name,
         })
 
     result = marks.groupby("subject").apply(calc_subject_stats, include_groups=False).reset_index()
     return result.sort_values(by="Average", ascending=False)
 
 
-def get_department_performance():
-    """Calculates performance aggregated by department."""
-    perf = get_student_performance()
+def get_department_performance(exam_id=None, allow_all=False):
+    """Calculates performance aggregated by department for a specific examination scope."""
+    perf = get_student_performance(exam_id=exam_id, allow_all=allow_all)
     if perf.empty:
         return pd.DataFrame()
 
@@ -149,9 +192,9 @@ def get_department_performance():
     return dept_stats.sort_values(by="Average", ascending=False)
 
 
-def get_semester_performance():
-    """Calculates performance aggregated by semester."""
-    perf = get_student_performance()
+def get_semester_performance(exam_id=None, allow_all=False):
+    """Calculates performance aggregated by semester for a specific examination scope."""
+    perf = get_student_performance(exam_id=exam_id, allow_all=allow_all)
     if perf.empty:
         return pd.DataFrame()
 
@@ -170,12 +213,13 @@ def get_semester_performance():
     return sem_stats.sort_values(by="semester")
 
 
-def get_subject_correlation():
+def get_subject_correlation(exam_id=None, allow_all=False):
     """
-    Computes correlation matrix between subject marks.
+    Computes correlation matrix between subject marks for a specific examination scope.
     Returns correlation DataFrame.
     """
-    marks = database.get_marks()
+    target_exam_id, _ = resolve_examination(exam_id, allow_all)
+    marks = database.get_marks(exam_id=target_exam_id)
     if marks.empty:
         return pd.DataFrame()
 
@@ -224,16 +268,18 @@ def get_attendance_analytics():
     }
 
 
-def get_dashboard_metrics():
-    """Comprehensive KPIs for Executive Dashboard."""
+def get_dashboard_metrics(exam_id=None, allow_all=False):
+    """Comprehensive KPIs for Executive Dashboard for a specific examination scope."""
+    target_exam_id, target_exam_name = resolve_examination(exam_id, allow_all)
     students = database.get_students()
-    performance = get_student_performance()
-    subjects = get_subject_analysis()
+    performance = get_student_performance(exam_id=target_exam_id, allow_all=allow_all)
+    subjects = get_subject_analysis(exam_id=target_exam_id, allow_all=allow_all)
     departments = database.get_departments()
     att_analytics = get_attendance_analytics()
 
     if performance.empty:
         return {
+            "exam_scope": target_exam_name,
             "total_students": len(students),
             "total_departments": len(departments) if not departments.empty else 1,
             "total_subjects": len(subjects) if not subjects.empty else 0,
@@ -259,6 +305,7 @@ def get_dashboard_metrics():
     weakest = subjects.iloc[-1]["subject"] if not subjects.empty else "N/A"
 
     return {
+        "exam_scope": target_exam_name,
         "total_students": len(students),
         "total_departments": len(performance["department"].unique()),
         "total_subjects": len(subjects) if not subjects.empty else 0,

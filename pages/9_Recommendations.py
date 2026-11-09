@@ -22,16 +22,49 @@ st.write(
 
 st.divider()
 
-perf = get_student_performance()
+# Examination Scope Filter
+exams = database.get_examinations()
+exam_scope_options = []
+if not exams.empty:
+    exams_sorted = exams.copy()
+    exams_sorted["parsed_date"] = pd.to_datetime(exams_sorted["exam_date"], errors="coerce")
+    exams_sorted = exams_sorted.sort_values(by=["parsed_date", "id"], na_position="first")
+    latest_exam = exams_sorted.iloc[-1]
+    
+    exam_scope_options.append((f"Latest Examination: {latest_exam['name']}", int(latest_exam["id"]), False))
+    for _, r in exams.iterrows():
+        exam_scope_options.append((f"Single Examination: {r['name']}", int(r["id"]), False))
+    exam_scope_options.append(("Cumulative Across All Examinations (Intentionally Aggregated)", None, True))
+
+col_rec_scope, _ = st.columns([1, 2])
+with col_rec_scope:
+    sel_rec_label = st.selectbox(
+        "Diagnostic Examination Scope",
+        options=[opt[0] for opt in exam_scope_options] if exam_scope_options else ["Default Scope"],
+        index=0,
+    )
+
+sel_exam_id = None
+sel_allow_all = False
+for label, e_id, allow_all in exam_scope_options:
+    if label == sel_rec_label:
+        sel_exam_id = e_id
+        sel_allow_all = allow_all
+        break
+
+perf = get_student_performance(exam_id=sel_exam_id, allow_all=sel_allow_all)
 students = database.get_students()
 
 if perf.empty or students.empty:
-    st.info("No student academic records available for diagnostic recommendations.")
+    st.info("No student academic records available for diagnostic recommendations in this examination scope.")
 else:
+    active_scope_name = perf.iloc[0].get("Exam_Scope", "Selected Examination Scope")
+    st.caption(f"Active Evaluation Scope: **{active_scope_name}**")
+
     # Cohort Risk Stratification Overview
     st.subheader("Cohort Academic Risk Stratification")
 
-    cohort_risk = get_cohort_risk_overview()
+    cohort_risk = get_cohort_risk_overview(exam_id=sel_exam_id, allow_all=sel_allow_all)
 
     col_r1, col_r2, col_r3 = st.columns(3)
     high_risk_count = len(cohort_risk[cohort_risk["Risk_Category"] == "High Risk"])
@@ -86,7 +119,7 @@ else:
         format_func=lambda x: f"{students.loc[students['id'] == x, 'name'].iloc[0]} (ID: {x})",
     )
 
-    rec = generate_student_recommendations(selected_student_id)
+    rec = generate_student_recommendations(selected_student_id, exam_id=sel_exam_id, allow_all=sel_allow_all)
 
     if rec:
         # Overview Cards

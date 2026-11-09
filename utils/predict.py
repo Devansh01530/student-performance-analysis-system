@@ -3,10 +3,13 @@ Predictive Analytics and Machine Learning Engine for Academic Performance.
 Longitudinal examination-to-examination performance forecasting with zero data leakage:
 - Evaluated via Student-Grouped Partitioning (GroupShuffleSplit: no student in test exists in train)
   or Chronological Progression Partitioning (train on earlier examinations, test on later milestones).
-- Uses strictly historical attendance records logged prior to the target examination.
-- Algorithms: Linear Regression, Decision Tree Regression, Random Forest Regression
-- Metric Evaluations: MAE, MSE, RMSE, R-squared
-- Upcoming examination forecast for currently enrolled students
+- Uses strictly historical attendance records logged prior to the target examination date.
+- Orders examinations strictly by valid actual examination dates (with deterministic fallback).
+- Selects the best performing model via holdout RMSE, then retrains that selected algorithm
+  on all valid historical transitions before forecasting upcoming performance.
+- Algorithms: Linear Regression, Decision Tree Regression, Random Forest Regression.
+- Metric Evaluations: MAE, MSE, RMSE, R-squared (coefficient of determination).
+- Upcoming examination forecast for currently enrolled students.
 """
 
 import numpy as np
@@ -24,8 +27,9 @@ def build_examination_transitions_dataset(target_subject=None):
     """
     Constructs a sequential dataset mapping Exam(t) -> Exam(t+1) performance.
     Guarantees zero data leakage by:
-    1. Predicting future examination results strictly from prior examination records.
-    2. Calculating attendance strictly from historical logs recorded up to the prior examination date.
+    1. Ordering examinations strictly by valid actual examination dates (handling missing/invalid dates safely).
+    2. Predicting future examination results strictly from prior examination records.
+    3. Calculating attendance strictly from historical logs recorded up to the prior examination date.
     """
     progress = database.get_all_exam_progress()
 
@@ -65,7 +69,15 @@ def build_examination_transitions_dataset(target_subject=None):
     latest_exam_per_student = {}
 
     for s_id, group in pivot.groupby("student_id"):
-        sorted_g = group.sort_values("exam_id").reset_index(drop=True)
+        # Order examinations strictly by valid parsed actual examination dates
+        group_work = group.copy()
+        group_work["parsed_date"] = pd.to_datetime(group_work["exam_date"], errors="coerce")
+        # Deterministic secondary sort on exam_id if dates are missing, identical, or unparseable
+        sorted_g = group_work.sort_values(
+            by=["parsed_date", "exam_id"],
+            na_position="last",
+        ).reset_index(drop=True)
+
         latest_exam_per_student[s_id] = sorted_g.iloc[-1]
 
         for i in range(len(sorted_g) - 1):
@@ -74,7 +86,7 @@ def build_examination_transitions_dataset(target_subject=None):
 
             prev_date = str(prev_row["exam_date"])
             att_map_for_date = historical_att_by_date.get(prev_date, {})
-            
+
             # Historical attendance strictly up to prior examination date
             if s_id in att_map_for_date:
                 student_hist_att = att_map_for_date[s_id]
@@ -120,6 +132,10 @@ def train_and_evaluate_models(target_subject=None, eval_strategy="student_groupe
       for any student in the test set are completely withheld from the training set.
     - 'chronological': Splits by examination timeline. Trains on earlier examinations and tests on the latest milestone.
 
+    Model Retraining:
+    - Evaluates candidates on holdout partition to select best performing algorithm by minimum RMSE.
+    - Retrains that selected algorithm on ALL valid historical transitions before generating upcoming predictions.
+
     Returns:
     - status: 'success' or 'insufficient_data'
     - target: target variable display name
@@ -159,7 +175,6 @@ def train_and_evaluate_models(target_subject=None, eval_strategy="student_groupe
         train_mask = transitions_df["to_exam_id"] < max_target_exam
         test_mask = transitions_df["to_exam_id"] == max_target_exam
 
-        # Verify both splits have data
         if train_mask.sum() >= 4 and test_mask.sum() >= 2:
             X_train, y_train = X[train_mask], y[train_mask]
             X_test, y_test = X[test_mask], y[test_mask]
@@ -180,7 +195,7 @@ def train_and_evaluate_models(target_subject=None, eval_strategy="student_groupe
         test_indices = transitions_df.iloc[test_idx].index
         eval_strategy_name = "Student-Grouped Holdout (Zero Student Overlap: Test Students Completely Unseen in Training)"
 
-    models = {
+    eval_models = {
         "Linear Regression": LinearRegression(),
         "Decision Tree Regression": DecisionTreeRegressor(random_state=42, max_depth=3),
         "Random Forest Regression": RandomForestRegressor(n_estimators=50, random_state=42, max_depth=3),
@@ -189,7 +204,7 @@ def train_and_evaluate_models(target_subject=None, eval_strategy="student_groupe
     metrics_list = []
     predictions_dict = {}
 
-    for name, model in models.items():
+    for name, model in eval_models.items():
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
         predictions_dict[name] = y_pred
@@ -209,7 +224,16 @@ def train_and_evaluate_models(target_subject=None, eval_strategy="student_groupe
 
     metrics_df = pd.DataFrame(metrics_list)
     best_model_name = metrics_df.sort_values(by="RMSE").iloc[0]["Algorithm"]
-    best_model = models[best_model_name]
+
+    # Retrain the selected best algorithm on ALL valid historical transitions (X, y)
+    # for generating upcoming next-examination predictions for current students.
+    fresh_production_models = {
+        "Linear Regression": LinearRegression(),
+        "Decision Tree Regression": DecisionTreeRegressor(random_state=42, max_depth=3),
+        "Random Forest Regression": RandomForestRegressor(n_estimators=50, random_state=42, max_depth=3),
+    }
+    production_model = fresh_production_models[best_model_name]
+    production_model.fit(X, y)
 
     # Test Actual vs Predicted comparison on strictly held-out partition
     test_rows = transitions_df.loc[test_indices]
@@ -227,7 +251,7 @@ def train_and_evaluate_models(target_subject=None, eval_strategy="student_groupe
     test_students = sorted(list(test_rows["name"].unique()))
 
     # Forecast UPCOMING next examination for currently enrolled students
-    # Use each student's most recent examination and their up-to-date recorded attendance
+    # Uses the production model retrained on all historical data
     current_att_df = database.get_attendance_summary()
     att_map = {}
     if not current_att_df.empty:
@@ -245,7 +269,7 @@ def train_and_evaluate_models(target_subject=None, eval_strategy="student_groupe
             x_curr[f"Prev_{sub}"] = latest_row[sub]
 
         x_curr_df = pd.DataFrame([x_curr])[feature_cols]
-        predicted_score = float(np.clip(best_model.predict(x_curr_df)[0], 0.0, 100.0).round(2))
+        predicted_score = float(np.clip(production_model.predict(x_curr_df)[0], 0.0, 100.0).round(2))
 
         curr_avg = float(latest_row["Exam_Average"])
         delta = round(predicted_score - curr_avg, 2)
@@ -296,8 +320,9 @@ def train_and_evaluate_models(target_subject=None, eval_strategy="student_groupe
 
 def simulate_student_whatif(current_average, study_hours_delta=0.0, attendance_rate=85.0):
     """
-    Simulates projected next examination score under altered study habits and attendance rate.
-    Uses non-linear marginal returns with asymptotic saturation.
+    Rule-Based Scenario Simulator (Marginal Returns Formula, not Machine Learning).
+    Simulates projected next examination score under altered study habits and attendance rate
+    using non-linear marginal returns with asymptotic saturation.
     """
     study_boost = (study_hours_delta * 1.35) * (1.0 - (current_average / 112.0))
     att_adj = ((attendance_rate - 75.0) / 25.0) * 2.5

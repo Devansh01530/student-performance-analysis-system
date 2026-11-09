@@ -24,17 +24,43 @@ st.divider()
 
 # Examination Scope Filter
 exams = database.get_examinations()
+exam_opts = []
+if not exams.empty:
+    exams_sorted = exams.copy()
+    exams_sorted["parsed_date"] = pd.to_datetime(exams_sorted["exam_date"], errors="coerce")
+    exams_sorted = exams_sorted.sort_values(by=["parsed_date", "id"], na_position="first")
+    latest_exam = exams_sorted.iloc[-1]
+    
+    exam_opts.append((f"Latest Examination: {latest_exam['name']}", int(latest_exam["id"]), False))
+    for _, r in exams.iterrows():
+        exam_opts.append((f"Single Examination: {r['name']}", int(r["id"]), False))
+    exam_opts.append(("Cumulative Across All Examinations (Intentionally Aggregated)", None, True))
+
 col_ex, _ = st.columns([1, 2])
 with col_ex:
-    exam_opts = [("All Examinations", None)] + [(r["name"], r["id"]) for _, r in exams.iterrows()]
-    sel_exam_label = st.selectbox("Examination Scope", [opt[0] for opt in exam_opts])
-    sel_exam_id = [opt[1] for opt in exam_opts if opt[0] == sel_exam_label][0]
+    sel_exam_label = st.selectbox(
+        "Examination Scope",
+        options=[opt[0] for opt in exam_opts] if exam_opts else ["Default Scope"],
+        index=0,
+    )
+
+sel_exam_id = None
+sel_allow_all = False
+for label, e_id, allow_all in exam_opts:
+    if label == sel_exam_label:
+        sel_exam_id = e_id
+        sel_allow_all = allow_all
+        break
 
 # Subject Data
-subject_data = get_subject_analysis(exam_id=sel_exam_id)
+subject_data = get_subject_analysis(exam_id=sel_exam_id, allow_all=sel_allow_all)
 marks_data = database.get_marks(exam_id=sel_exam_id)
 
 if subject_data.empty:
+    st.info("No course performance data available for this examination scope.")
+else:
+    active_scope_name = subject_data.iloc[0].get("Exam_Scope", "Selected Examination Scope")
+    st.caption(f"Active Examination Scope: **{active_scope_name}**")
     st.info("No course performance data available for this examination scope.")
 else:
     # Curriculum Overview
