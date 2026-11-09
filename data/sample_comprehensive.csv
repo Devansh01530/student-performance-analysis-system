@@ -1,0 +1,26 @@
+Name,Department,Semester,Email,Python,C++,Java,Data Structures,Database Management
+Aarav Sharma,BCA,3,aarav.sharma@example.edu,88,92,85,90,87
+Ananya Verma,BCA,3,ananya.verma@example.edu,94,89,91,95,92
+Rohan Gupta,BCA,3,rohan.gupta@example.edu,72,78,75,70,74
+Pooja Patel,BCA,3,pooja.patel@example.edu,81,85,79,88,84
+Siddharth Mehta,BCA,3,siddharth.m@example.edu,65,70,68,62,67
+Ishaan Nair,B.Tech CSE,3,ishaan.nair@example.edu,91,94,90,96,93
+Kavya Joshi,B.Tech CSE,3,kavya.joshi@example.edu,86,88,84,91,89
+Aditya Rao,B.Tech CSE,3,aditya.rao@example.edu,58,62,55,60,59
+Neha Kulkarni,B.Tech CSE,3,neha.k@example.edu,76,80,78,82,79
+Vikram Malhotra,B.Tech CSE,3,vikram.m@example.edu,42,45,40,48,44
+Priya Iyer,MCA,1,priya.iyer@example.edu,95,96,92,94,97
+Arjun Reddy,MCA,1,arjun.reddy@example.edu,83,87,85,89,86
+Sneha Das,MCA,1,sneha.das@example.edu,68,72,70,66,71
+Varun Singhal,MCA,1,varun.s@example.edu,38,44,42,35,40
+Divya Menon,MCA,1,divya.menon@example.edu,89,91,88,90,92
+Manish Tiwari,BCA,3,manish.t@example.edu,77,81,75,79,80
+Riya Sen,BCA,3,riya.sen@example.edu,84,86,82,88,85
+Deepak Chopra,BCA,3,deepak.c@example.edu,60,65,63,58,62
+Shweta Roy,BCA,3,shweta.roy@example.edu,92,90,94,93,91
+Kunal Kapoor,BCA,3,kunal.k@example.edu,48,52,50,45,49
+Tarun Bhatia,B.Tech CSE,3,tarun.b@example.edu,79,83,80,85,82
+Meera Nambiar,B.Tech CSE,3,meera.n@example.edu,88,91,87,89,90
+Rajesh Khanna,B.Tech CSE,3,rajesh.k@example.edu,36,41,39,42,38
+Simran Kaur,MCA,1,simran.k@example.edu,90,93,89,92,91
+Abhishek Yadav,MCA,1,abhishek.y@example.edu,64,68,66,61,65

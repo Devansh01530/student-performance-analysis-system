@@ -91,10 +91,15 @@ The platform is organized into 10 dedicated functional modules:
 
 ## 6. Running Test Suite
 
-Execute the automated test suite using Python:
+Execute the automated test suite with standard test discovery:
 ```bash
-python tests/test_database.py
-python tests/test_analysis.py
-python tests/test_validation.py
+python -m unittest discover -s tests
+```
+
+Or run individual test modules:
+```bash
+python -m unittest tests/test_database.py
+python -m unittest tests/test_analysis.py
+python -m unittest tests/test_validation.py
 ```
 
