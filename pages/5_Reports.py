@@ -74,7 +74,7 @@ if performance.empty:
 else:
     active_scope_name = performance.iloc[0].get("Exam_Scope", "Selected Examination Scope")
     st.caption(f"Active Report Evaluation Scope: **{active_scope_name}**")
-else:
+
     # Summary Cards
     st.subheader("Executive Cohort Summary")
     c1, c2, c3, c4 = st.columns(4)

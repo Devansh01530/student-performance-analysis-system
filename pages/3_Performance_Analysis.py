@@ -60,8 +60,7 @@ if df.empty:
 else:
     active_scope_name = df.iloc[0].get("Exam_Scope", "Selected Examination Scope")
     st.caption(f"Active Evaluation Scope: **{active_scope_name}**")
-    st.info("No student performance records available for this selection.")
-else:
+
     # Centralized Filter Matrix
     st.subheader("Filter & Segmentation Parameters")
 

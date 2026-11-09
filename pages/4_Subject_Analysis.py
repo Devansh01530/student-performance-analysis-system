@@ -61,8 +61,7 @@ if subject_data.empty:
 else:
     active_scope_name = subject_data.iloc[0].get("Exam_Scope", "Selected Examination Scope")
     st.caption(f"Active Examination Scope: **{active_scope_name}**")
-    st.info("No course performance data available for this examination scope.")
-else:
+
     # Curriculum Overview
     st.subheader("Curriculum Health Overview")
 
